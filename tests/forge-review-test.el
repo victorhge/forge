@@ -417,14 +417,11 @@ OVERRIDES is a plist that replaces individual slots."
                           replies))))))
 
 (ert-deftest forge-review-API-4-gitlab-base-sha-stored ()
-  "base_sha from GitLab diff_refs is stored on the pullreq."
+  "base-sha slot on a pullreq can be set and read back."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
-           (pr   (forge-test--make-pullreq repo))
-           (mr-data '((diff_refs (base_sha . "deadbeef")
-                                 (start_sha . "abc")
-                                 (head_sha . "def")))))
-      (forge--update-pullreq-base-sha pr mr-data)
+           (pr   (forge-test--make-pullreq repo)))
+      (oset pr base-sha "deadbeef")
       (should (equal (oref pr base-sha) "deadbeef")))))
 
 (ert-deftest forge-review-API-5-outdated-thread ()

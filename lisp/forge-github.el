@@ -157,10 +157,10 @@
              body)
           (  labels [(:edges t)] id))
        (  labels [(:edges t) (:singular label id)]
-          id
-          name
-          color
-          description)
+         id
+         name
+         color
+         description)
        (  milestones [(:edges t) (:singular milestone id)]
           id
           number
@@ -211,7 +211,7 @@
              path
              diffSide
              line
-             (  comments
+             (  comments [(first 100)]
                 (edges
                  (node
                   id
@@ -1031,47 +1031,47 @@
        :callback  (forge--post-submit-callback)
        :errorback (forge--post-submit-errorback)))))
 
+(defun forge--github-pending-review-comments (topic)
+  "Return pending review-comment rows for TOPIC as a GitHub `comments' alist."
+  (mapcar (lambda (rc)
+            (list (cons 'path (oref rc new-path))
+                  (cons 'line (oref rc new-line))
+                  (cons 'side "RIGHT")
+                  (cons 'body (oref rc body))))
+          (seq-filter (lambda (rc) (oref rc pending-p))
+                      (oref topic review-comments))))
+
+(defun forge--github-flush-pending-review-comments (topic)
+  "Clear pending-p on all pending review-comment rows of TOPIC."
+  (dolist (rc (seq-filter (lambda (rc) (oref rc pending-p))
+                          (oref topic review-comments)))
+    (oset rc pending-p nil)))
+
 (cl-defmethod forge--submit-approve-pullreq
   ((_repo forge-github-repository)
    (topic forge-pullreq))
-  (let* ((body     (string-trim (buffer-str)))
-         (pending  (seq-filter (lambda (rc) (oref rc pending-p))
-                               (oref topic review-comments)))
-         (comments (mapcar (lambda (rc)
-                             (list (cons 'path (oref rc new-path))
-                                   (cons 'line (oref rc new-line))
-                                   (cons 'side "RIGHT")
-                                   (cons 'body (oref rc body))))
-                           pending)))
+  (let ((body     (string-trim (buffer-str)))
+        (comments (forge--github-pending-review-comments topic)))
     (forge-rest topic "POST" "/repos/:owner/:repo/pulls/:number/reviews"
       ((event "APPROVE")
        (and (not (equal body "")) (body body))
        (and comments (comments comments)))
       :callback  (forge--post-submit-callback)
       :errorback (forge--post-submit-errorback))
-    (dolist (rc pending)
-      (oset rc pending-p nil))))
+    (forge--github-flush-pending-review-comments topic)))
 
 (cl-defmethod forge--submit-request-changes
   ((_repo forge-github-repository)
    (topic forge-pullreq))
-  (let* ((body     (string-trim (buffer-str)))
-         (pending  (seq-filter (lambda (rc) (oref rc pending-p))
-                               (oref topic review-comments)))
-         (comments (mapcar (lambda (rc)
-                             (list (cons 'path (oref rc new-path))
-                                   (cons 'line (oref rc new-line))
-                                   (cons 'side "RIGHT")
-                                   (cons 'body (oref rc body))))
-                           pending)))
+  (let ((body     (string-trim (buffer-str)))
+        (comments (forge--github-pending-review-comments topic)))
     (forge-rest topic "POST" "/repos/:owner/:repo/pulls/:number/reviews"
       ((event "REQUEST_CHANGES")
        (and (not (equal body "")) (body body))
        (and comments (comments comments)))
       :callback  (forge--post-submit-callback)
       :errorback (forge--post-submit-errorback))
-    (dolist (rc pending)
-      (oset rc pending-p nil))))
+    (forge--github-flush-pending-review-comments topic)))
 
 (cl-defmethod forge--set-topic-title
   ((_repo forge-github-repository)

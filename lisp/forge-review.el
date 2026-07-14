@@ -112,17 +112,15 @@ Safe to call on an existing database; no-ops if already present."
            (left-side (equal .diffSide "LEFT"))
            (line      .line)
            (path      .path)
-           (edges     (alist-get 'edges (alist-get 'comments thread)))
+           (comments  (alist-get 'comments thread))
            (opener-their-id nil))
-      (dolist (edge edges)
-        (let-alist (alist-get 'node edge)
+      (dolist (comment comments)
+        (let-alist comment
           (let* ((is-opener (null opener-their-id))
                  (rc-id     (forge--object-id pr-id .id))
                  (reply-to  (unless is-opener thread-id))
-                 (state2    (let ((r (alist-get 'pullRequestReview
-                                                (alist-get 'node edge))))
-                              (when r
-                                (intern (downcase (alist-get 'state r)))))))
+                 (state2    (when-let ((r .pullRequestReview))
+                              (intern (downcase (alist-get 'state r))))))
             (when is-opener
               (setq opener-their-id .id))
             (closql-insert
@@ -150,6 +148,8 @@ Safe to call on an existing database; no-ops if already present."
               :pending-p    nil)
              t)))))))
 
+;; TODO: move forge--github-bool to forge-github.el and update all call sites
+;; there to use it instead of inlining the same cond.
 (defun forge--github-bool (val)
   "Convert GitHub JSON boolean (t/:false/nil) to Elisp boolean."
   (cond ((eq val t) t)
@@ -193,11 +193,6 @@ Safe to call on an existing database; no-ops if already present."
              t))
           (setq first nil))))))
 
-(defun forge--update-pullreq-base-sha (pr data)
-  "Store base_sha from GitLab diff_refs DATA onto PR."
-  (let-alist data
-    (when-let ((sha .diff_refs.base_sha))
-      (oset pr base-sha sha))))
 
 ;;; Diff Line-Number Computation
 
@@ -296,24 +291,16 @@ DATA is an alist of request body parameters."
 (defun forge--submit-github-review (repo pr event)
   "POST all pending review comments for PR to GitHub as a batch review.
 EVENT is a symbol like `comment', `approve', or `request-changes'."
-  (let* ((pending (seq-filter
-                   (lambda (rc) (oref rc pending-p))
-                   (oref pr review-comments)))
-         (comments (mapcar (lambda (rc)
-                             (list (cons 'path   (oref rc new-path))
-                                   (cons 'line   (oref rc new-line))
-                                   (cons 'side   "RIGHT")
-                                   (cons 'body   (oref rc body))))
-                           pending))
-         (data (list (cons 'event    (upcase (symbol-name event)))
-                     (cons 'body     "")
-                     (cons 'comments comments))))
+  (let ((comments (forge--github-pending-review-comments pr))
+        (data     (list (cons 'event (upcase (symbol-name event)))
+                        (cons 'body  ""))))
+    (when comments
+      (push (cons 'comments comments) data))
     (forge-review--do-rest
      "POST"
      (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/reviews")
      data)
-    (dolist (rc pending)
-      (oset rc pending-p nil))))
+    (forge--github-flush-pending-review-comments pr)))
 
 (defun forge--github-post-reply (repo pr opener text)
   "POST a reply to OPENER's thread on GitHub."
@@ -403,6 +390,9 @@ EVENT is a symbol like `comment', `approve', or `request-changes'."
             (oref rc database-id)))
    nil))
 
+;; TODO: all forge-type dispatch in this file (forge-gitlab-repository--eieio-childp
+;; guards) should be converted to cl-defmethod specializing on the repo class,
+;; matching the pattern used throughout forge-github.el / forge-gitlab.el.
 (defun forge-discard-review-comment (rc)
   "Delete review comment RC from the database and the forge API.
 For pending (not-yet-submitted) comments only the local DB row is
@@ -427,26 +417,31 @@ removed.  For submitted comments the forge API is called first."
 
 (defun forge-insert-review-threads (topic)
   "Insert inline review comment threads for TOPIC into the current buffer."
-  (let* ((comments (oref topic review-comments))
-         (openers  (seq-filter (lambda (c) (null (oref c reply-to))) comments))
-         (by-file  (seq-group-by (lambda (c)
-                                   (or (oref c new-path) (oref c old-path)))
-                                 openers)))
+  (let* ((comments  (oref topic review-comments))
+         (openers   (seq-filter (lambda (c) (null (oref c reply-to))) comments))
+         (by-file   (seq-group-by (lambda (c)
+                                    (or (oref c new-path) (oref c old-path)))
+                                  openers))
+         (replies-by-disc (make-hash-table :test 'equal)))
+    (dolist (c comments)
+      (when-let ((disc-id (oref c reply-to)))
+        (push c (gethash disc-id replies-by-disc))))
     (magit-insert-section (review-threads)
       (magit-insert-heading "Review threads")
       (if (null openers)
           (insert "  (no review threads)\n")
         (dolist (file-pair (sort by-file (lambda (a b)
                                            (string< (car a) (car b)))))
-          (let ((file  (car file-pair))
+          (let ((file     (car file-pair))
                 (fopeners (cdr file-pair)))
             (magit-insert-section (review-file file)
               (magit-insert-heading file)
               (dolist (opener fopeners)
-                (forge--insert-review-thread topic opener comments)))))))))
+                (forge--insert-review-thread opener replies-by-disc)))))))))
 
-(defun forge--insert-review-thread (topic opener all-comments)
-  "Insert a single review thread starting with OPENER."
+(defun forge--insert-review-thread (opener replies-by-disc)
+  "Insert a single review thread starting with OPENER.
+REPLIES-BY-DISC is a hash table mapping discussion-id to reply list."
   (let* ((disc-id  (oref opener discussion-id))
          (resolved (oref opener resolved-p))
          (pending  (oref opener pending-p))
@@ -455,16 +450,11 @@ removed.  For submitted comments the forge API is called first."
       (oset magit-insert-section--current heading heading)
       (magit-insert-heading heading)
       (forge--insert-review-comment-body opener)
-      (let ((replies (seq-filter
-                      (lambda (c)
-                        (and (oref c reply-to)
-                             (equal (oref c reply-to) disc-id)))
-                      all-comments)))
-        (dolist (reply replies)
-          (magit-insert-section (review-reply reply)
-            (magit-insert-heading
-              (forge--review-comment-heading reply))
-            (forge--insert-review-comment-body reply)))))))
+      (dolist (reply (nreverse (gethash disc-id replies-by-disc)))
+        (magit-insert-section (review-reply reply)
+          (magit-insert-heading
+            (forge--review-comment-heading reply))
+          (forge--insert-review-comment-body reply))))))
 
 (defun forge--review-comment-heading (rc)
   "Return a heading string for review comment RC."
@@ -526,9 +516,9 @@ removed.  For submitted comments the forge API is called first."
   "Insert review comment overlays into the current diff buffer.
 Clears any existing overlays first, then places fresh ones."
   (when (derived-mode-p 'magit-diff-mode)
-    (forge--clear-review-comment-overlays)
     (when-let* ((pr (forge-current-pullreq))
                 (comments (oref pr review-comments)))
+      (forge--clear-review-comment-overlays)
       (dolist (rc (seq-filter (lambda (c) (null (oref c reply-to))) comments))
         (let* ((new-path (oref rc new-path))
                (old-path (oref rc old-path))
@@ -632,19 +622,18 @@ Clears any existing overlays first, then places fresh ones."
 (defun forge--submit-add-review-comment ()
   "Submit a new inline review comment from the current post buffer."
   (let* ((pr      forge--buffer-post-object)
-         (repo    (forge-get-repository pr))
          (body    (forge--clear-comment-input (buffer-string)))
          (result  (with-current-buffer forge--pre-post-buffer
                     (forge--diff-line-number-at-point)))
+         (path    (with-current-buffer forge--pre-post-buffer
+                    (forge--diff-file-at-point)))
          (rc      (forge-pullreq-review-comment
                    :id           (forge--object-id (oref pr id) (format "pending-%s" (float-time)))
                    :their-id     nil
                    :discussion-id nil
                    :database-id  0
                    :pullreq      (oref pr id)
-                   :new-path     (and result (not (eq (car result) 'old))
-                                      (with-current-buffer forge--pre-post-buffer
-                                        (forge--diff-file-at-point)))
+                   :new-path     (and result (not (eq (car result) 'old)) path)
                    :new-line     (when (and result (eq (car result) 'new)) (cdr result))
                    :old-line     (when (and result (eq (car result) 'old)) (cdr result))
                    :body         body
@@ -720,29 +709,28 @@ Clears any existing overlays first, then places fresh ones."
         (format "*forge: reply to review comment by %s*"
                 (oref opener author))))))
 
-(defun forge-resolve-review-thread ()
-  "Mark the review thread at point as resolved."
-  (interactive)
+(defun forge--set-review-thread-resolved (resolved)
+  "Resolve or unresolve the review thread at point, per RESOLVED."
   (when-let ((opener (magit-section-value-if 'review-comment)))
     (let* ((pr   (closql-get (forge-db) (oref opener pullreq) 'forge-pullreq))
            (repo (forge-get-repository pr)))
       (if (forge-gitlab-repository--eieio-childp repo)
-          (forge--gitlab-resolve-thread repo pr opener t)
-        (forge--github-resolve-thread repo pr opener))
-      (oset opener resolved-p t)
+          (forge--gitlab-resolve-thread repo pr opener resolved)
+        (if resolved
+            (forge--github-resolve-thread repo pr opener)
+          (forge--github-unresolve-thread repo pr opener)))
+      (oset opener resolved-p resolved)
       (forge-refresh-buffer))))
+
+(defun forge-resolve-review-thread ()
+  "Mark the review thread at point as resolved."
+  (interactive)
+  (forge--set-review-thread-resolved t))
 
 (defun forge-unresolve-review-thread ()
   "Mark the review thread at point as unresolved."
   (interactive)
-  (when-let ((opener (magit-section-value-if 'review-comment)))
-    (let* ((pr   (closql-get (forge-db) (oref opener pullreq) 'forge-pullreq))
-           (repo (forge-get-repository pr)))
-      (if (forge-gitlab-repository--eieio-childp repo)
-          (forge--gitlab-resolve-thread repo pr opener nil)
-        (forge--github-unresolve-thread repo pr opener))
-      (oset opener resolved-p nil)
-      (forge-refresh-buffer))))
+  (forge--set-review-thread-resolved nil))
 
 (defun forge--submit-add-single-review-comment ()
   "Post a new inline comment directly to the forge API (no staging)."
