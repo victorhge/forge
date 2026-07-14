@@ -27,6 +27,9 @@
 (require 'forge-issue)
 (require 'forge-pullreq)
 
+(declare-function forge--update-pullreq-review-comments "forge-review"
+                  (repo pr threads))
+
 ;;; Class
 
 (defclass forge-github-repository (forge-repository)
@@ -200,7 +203,26 @@
              createdAt
              updatedAt
              body)
-          (  labels [(:edges t)] id)))))
+          (  labels [(:edges t)] id)
+          (  reviewThreads [(:edges t)]
+             id
+             isResolved
+             isOutdated
+             path
+             diffSide
+             line
+             (  comments
+                (edges
+                 (node
+                  id
+                  databaseId
+                  (author login)
+                  body
+                  createdAt
+                  updatedAt
+                  diffHunk
+                  (reactionGroups content (reactors totalCount))
+                  (pullRequestReview state)))))))))
 
 ;;;; Repository
 
@@ -647,6 +669,8 @@
               :updated .updatedAt
               :body    (forge--sanitize-string .body))
              t)))
+        (when .reviewThreads
+          (forge--update-pullreq-review-comments repo pullreq .reviewThreads))
         (forge--update-status repo pullreq data bump initial-pull))
       (forge--set-connections repo pullreq 'assignees .assignees)
       (forge--set-connections repo pullreq 'review-requests

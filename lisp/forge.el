@@ -62,6 +62,7 @@
 (require 'forge-issue)
 (require 'forge-pullreq)
 (require 'forge-revnote)
+(require 'forge-review)
 (require 'forge-notify)
 
 (require 'forge-forgejo)
@@ -156,7 +157,11 @@ is loaded, then `magit-mode-map' ends up being modified anyway.")
     '("Ni" "Issues" forge-jump-to-issues))
 
   (transient-append-suffix 'magit-merge "a"
-    '(7 "M" "Merge using API" forge-merge)))
+    '(7 "M" "Merge using API" forge-merge))
+
+  (with-eval-after-load 'magit-diff
+    (keymap-set magit-diff-mode-map "C-c r c" #'forge-add-review-comment)
+    (keymap-set magit-diff-mode-map "C-c r C" #'forge-add-single-review-comment)))
 
 ;;; Startup Asserts
 

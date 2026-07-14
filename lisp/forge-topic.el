@@ -1357,6 +1357,8 @@ This mode itself is never used directly."
       (forge-insert-post topic nil)
       (dolist (post (oref topic posts))
         (forge-insert-post post topic))
+      (when (forge-pullreq-p topic)
+        (forge--maybe-insert-review-threads))
       (when (and (display-images-p)
                  (fboundp 'markdown-display-inline-images))
         (let ((markdown-display-remote-images t))

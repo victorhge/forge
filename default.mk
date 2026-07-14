@@ -14,6 +14,7 @@ ELS  += $(PKG)-discussion.el
 ELS  += $(PKG)-issue.el
 ELS  += $(PKG)-pullreq.el
 ELS  += $(PKG)-revnote.el
+ELS  += $(PKG)-review.el
 ELS  += $(PKG)-notify.el
 ELS  += $(PKG)-client.el
 ELS  += $(PKG)-github.el
@@ -44,6 +45,7 @@ DEPS += yaml
 # Optional
 DEPS += sqlite3
 DEPS += vertico
+
 
 LOAD_PATH     ?= $(addprefix -L ../../,$(DEPS))
 LOAD_PATH     += -L .

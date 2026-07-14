@@ -74,6 +74,8 @@
    (their-id             :initarg :their-id)
    (slug                 :initarg :slug)
    (saved-p              :initarg :saved-p :initform nil)
+   (base-sha             :initarg :base-sha :initform nil)
+   (review-comments      :closql-class forge-pullreq-review-comment)
    ))
 
 (cl-defmethod closql-dref ((obj forge-pullreq) (_(eql assignees)))

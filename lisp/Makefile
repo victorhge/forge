@@ -15,6 +15,7 @@ $(PKG)-discussion.elc: $(PKG)-topic.elc
 $(PKG)-issue.elc:      $(PKG)-topic.elc
 $(PKG)-pullreq.elc:    $(PKG)-topic.elc
 $(PKG)-revnote.elc:    $(PKG)-topic.elc
+$(PKG)-review.elc:     $(PKG)-pullreq.elc $(PKG)-topic.elc
 $(PKG)-notify.elc:     $(PKG).elc
 $(PKG)-client.elc:     $(PKG).elc
 $(PKG)-github.elc:     $(PKG)-client.elc $(PKG)-discussion.elc \

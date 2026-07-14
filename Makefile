@@ -1,14 +1,24 @@
 -include config.mk
 include default.mk
 
-.PHONY: lisp docs
+.PHONY: lisp docs test
 
 all: lisp docs
+
+test:
+	@$(EMACS) -Q --batch \
+	  --eval "(require 'package)" \
+	  --eval "(package-initialize)" \
+	  -L ./lisp -L ./tests \
+	  --eval "(require 'forge-review)" \
+	  --eval "(require 'forge-review-test)" \
+	  -f ert-run-tests-batch-and-exit
 
 help:
 	$(info make all          -- Generate lisp and manual)
 	$(info make lisp         -- Generate byte-code and autoloads)
 	$(info make redo         -- Re-generate byte-code and autoloads)
+	$(info make test         -- Run ERT test suite)
 	$(info make docs         -- Generate all manual formats)
 	$(info make redo-docs    -- Re-generate all manual formats)
 	$(info make texi         -- Generate texi manual)

@@ -53,7 +53,7 @@
    (object-class :initform 'forge-repository)
    (file         :initform 'forge-database-file)
    (schemata     :initform 'forge--db-table-schemata)
-   (version      :initform 15)))
+   (version      :initform 16)))
 
 (defvar forge--override-connection-class nil)
 
@@ -421,7 +421,9 @@
       draft-p
       their-id
       slug
-      saved-p]
+      saved-p
+      base-sha
+      (review-comments :default eieio-unbound)]
      (:foreign-key
       [repository] :references repository [id]
       :on-delete :cascade))
@@ -471,6 +473,32 @@
     (pullreq-review-request
      [(pullreq :not-null)
       (id :not-null)]
+     (:foreign-key
+      [pullreq] :references pullreq [id]
+      :on-delete :cascade))
+
+    (pullreq-review-comment
+     [(class :not-null)
+      (id :not-null :primary-key)
+      their-id
+      discussion-id
+      database-id
+      pullreq
+      new-path
+      old-path
+      new-line
+      old-line
+      diff-hunk
+      outdated-p
+      resolved-p
+      reply-to
+      review-state
+      author
+      body
+      created
+      updated
+      (reactions :default eieio-unbound)
+      pending-p]
      (:foreign-key
       [pullreq] :references pullreq [id]
       :on-delete :cascade))
@@ -649,6 +677,12 @@
                      :default nil])
         (emacsql db [:alter-table repository :add-column discussions-until
                      :default nil]))
+    (up 16
+        (emacsql db [:create-table pullreq-review-comment $S1]
+                 (cdr (assq 'pullreq-review-comment forge--db-table-schemata)))
+        (emacsql db [:alter-table pullreq :add-column base-sha :default nil])
+        (emacsql db [:alter-table pullreq :add-column review-comments
+                     :default 'eieio-unbound]))
     ))
 
 (defun forge--backup-database (db)

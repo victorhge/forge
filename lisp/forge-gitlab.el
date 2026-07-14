@@ -26,6 +26,9 @@
 (require 'forge-issue)
 (require 'forge-pullreq)
 
+(declare-function forge--update-pullreq-review-comments "forge-review"
+                  (repo pr threads))
+
 ;;; Class
 
 (defclass forge-gitlab-repository (forge-repository)
@@ -235,6 +238,8 @@
                    (forge--fetch-pullreq-source-repo repo cur cb))
                   ((not (assq 'target_project (car cur)))
                    (forge--fetch-pullreq-target-repo repo cur cb))
+                  ((not (assq 'discussions (car cur)))
+                   (forge--fetch-pullreq-discussions repo cur cb))
                   ((setq cur (cdr cur))
                    (incf pos)
                    (forge--msg nil nil nil "Pulling pullreq %s/%s" pos cnt)
@@ -290,6 +295,17 @@
                   (setf (alist-get 'target_project (car cur)) value)
                   (funcall cb)))))
 
+(cl-defmethod forge--fetch-pullreq-discussions
+  ((repo forge-gitlab-repository) cur cb)
+  (forge--glab-get repo
+    (let-alist (car cur)
+      (format "/projects/%s/merge_requests/%s/discussions" .target_project_id .iid))
+    '((per_page . 100))
+    :unpaginate t
+    :callback (lambda (value)
+                (setf (alist-get 'discussions (car cur)) value)
+                (funcall cb))))
+
 (cl-defmethod forge--update-pullreqs ((repo forge-gitlab-repository) data)
   (dolist (v data)
     (forge--update-pullreq repo v)))
@@ -334,6 +350,7 @@
                :head-user    .source_project.owner.username
                :head-repo    .source_project.path_with_namespace
                :milestone    .milestone.iid
+               :base-sha     .diff_refs.base_sha
                :body         (forge--sanitize-string .description))))
         (closql-insert (forge-db) pullreq t)
         (unless (magit-get-boolean "forge.omitExpensive")
@@ -352,6 +369,14 @@
                     :updated .updated_at
                     :body    (forge--sanitize-string .body))))
               (closql-insert (forge-db) post t))))
+        (when .discussions
+          (let ((inline (seq-filter
+                         (lambda (d)
+                           (seq-some (lambda (n) (alist-get 'position n))
+                                     (alist-get 'notes d)))
+                         .discussions)))
+            (when inline
+              (forge--update-pullreq-review-comments repo pullreq inline))))
         (let ((until (oref repo pullreqs-until)))
           (when (or (not until) (string> .updated_at until))
             (oset repo pullreqs-until .updated_at)))
