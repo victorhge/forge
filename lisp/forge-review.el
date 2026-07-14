@@ -265,9 +265,9 @@ For context lines: returns an alist with both (old . N) and (new . N)."
                 (beginning-of-line))
               (unless found
                 (cond
-                  ((eq ch ?+) (incf new-n))
-                  ((eq ch ?-) (incf old-n))
-                  (t           (incf old-n) (incf new-n)))
+                  ((eq ch ?+) (cl-incf new-n))
+                  ((eq ch ?-) (cl-incf old-n))
+                  (t           (cl-incf old-n) (cl-incf new-n)))
                 (forward-line 1)))))))))
 
 ;;; Write Operations – thin wrappers for testing
@@ -328,6 +328,12 @@ EVENT is a symbol like `comment', `approve', or `request-changes'."
    'resolveReviewThread
    (list (cons 'threadId (oref opener discussion-id)))))
 
+(defun forge--github-unresolve-thread (repo pr opener)
+  "Unresolve the GitHub review thread identified by OPENER's discussion-id."
+  (forge-review--do-mutate
+   'unresolveReviewThread
+   (list (cons 'threadId (oref opener discussion-id)))))
+
 ;;; Write Operations – GitLab
 
 (defun forge--submit-gitlab-review-comment (repo pr)
@@ -336,10 +342,11 @@ EVENT is a symbol like `comment', `approve', or `request-changes'."
                    (lambda (rc) (oref rc pending-p))
                    (oref pr review-comments)))
          (base-sha (oref pr base-sha))
+         (start-sha (oref pr base-rev))
          (head-sha (oref pr head-rev)))
     (dolist (rc pending)
       (let* ((pos (list (cons 'base_sha  base-sha)
-                        (cons 'start_sha base-sha)
+                        (cons 'start_sha start-sha)
                         (cons 'head_sha  head-sha)
                         (cons 'position_type "text")
                         (cons 'new_path  (oref rc new-path))
@@ -363,15 +370,15 @@ EVENT is a symbol like `comment', `approve', or `request-changes'."
             (oref opener discussion-id)))
    (list (cons 'body text))))
 
-(defun forge--gitlab-resolve-thread (repo pr opener)
-  "PUT resolved=true for OPENER's discussion on GitLab."
+(defun forge--gitlab-resolve-thread (repo pr opener resolved)
+  "PUT resolved=RESOLVED for OPENER's discussion on GitLab."
   (forge-review--do-rest
    "PUT"
    (forge--format-resource
     pr
     (format "/projects/:project/merge_requests/:number/discussions/%s"
             (oref opener discussion-id)))
-   (list (cons 'resolved "true"))))
+   (list (cons 'resolved (if resolved t :false)))))
 
 ;;; Discard pending
 
@@ -432,22 +439,36 @@ EVENT is a symbol like `comment', `approve', or `request-changes'."
 
 (defun forge--review-comment-heading (rc)
   "Return a heading string for review comment RC."
-  (let ((author   (or (oref rc author) "(ghost)"))
-        (created  (or (oref rc created) ""))
-        (badges   nil))
+  (let* ((author   (or (oref rc author) "(ghost)"))
+         (new-line (oref rc new-line))
+         (old-line (oref rc old-line))
+         (line     (or new-line old-line))
+         (side     (if new-line "RIGHT" "LEFT"))
+         (created  (or (oref rc created) ""))
+         (badges   nil))
     (when (oref rc resolved-p) (push "[resolved]" badges))
     (when (oref rc outdated-p) (push "[outdated]" badges))
     (when (oref rc pending-p)  (push "[pending]"  badges))
-    (concat author
+    (concat "@" author
+            (when line (format " · line %d (%s)" line side))
             (when badges (concat " " (string-join (nreverse badges) " ")))
             (when (not (string-empty-p created))
               (concat " " created)))))
 
 (defun forge--insert-review-comment-body (rc)
-  "Insert the body of review comment RC."
+  "Insert the body of review comment RC, with diff hunk and reactions."
+  (when-let ((hunk (oref rc diff-hunk)))
+    (insert (forge--fontify-diff hunk))
+    (insert "\n"))
   (let ((body (or (oref rc body) "")))
     (insert (forge--fontify-markdown body))
-    (insert "\n\n")))
+    (insert "\n"))
+  (when-let ((reactions (oref rc reactions)))
+    (insert (mapconcat (lambda (pair)
+                         (format "%s %d" (car pair) (cdr pair)))
+                       reactions "  "))
+    (insert "\n"))
+  (insert "\n"))
 
 (defun forge--maybe-insert-review-threads ()
   "Insert review threads if the current buffer's topic is a pull-request."
@@ -563,7 +584,10 @@ EVENT is a symbol like `comment', `approve', or `request-changes'."
 ;;; Interactive commands
 
 (defvar-keymap forge-review-comment-section-map
-  "<remap> <magit-edit-thing>" #'forge-edit-review-comment
+  "<remap> <magit-edit-thing>" #'forge-reply-to-review-comment
+  "e"                          #'forge-edit-review-comment
+  "r"                          #'forge-resolve-review-thread
+  "u"                          #'forge-unresolve-review-thread
   "C-c C-k"                    #'forge-discard-review-comment-at-point
   "C-c C-r"                    #'forge-reply-to-review-comment)
 
@@ -657,6 +681,30 @@ EVENT is a symbol like `comment', `approve', or `request-changes'."
         "review-reply"
         (format "*forge: reply to review comment by %s*"
                 (oref opener author))))))
+
+(defun forge-resolve-review-thread ()
+  "Mark the review thread at point as resolved."
+  (interactive)
+  (when-let ((opener (magit-section-value-if 'review-comment)))
+    (let* ((pr   (closql-get (forge-db) (oref opener pullreq) 'forge-pullreq))
+           (repo (forge-get-repository pr)))
+      (if (forge-gitlab-repository--eieio-childp repo)
+          (forge--gitlab-resolve-thread repo pr opener t)
+        (forge--github-resolve-thread repo pr opener))
+      (oset opener resolved-p t)
+      (forge-refresh-buffer))))
+
+(defun forge-unresolve-review-thread ()
+  "Mark the review thread at point as unresolved."
+  (interactive)
+  (when-let ((opener (magit-section-value-if 'review-comment)))
+    (let* ((pr   (closql-get (forge-db) (oref opener pullreq) 'forge-pullreq))
+           (repo (forge-get-repository pr)))
+      (if (forge-gitlab-repository--eieio-childp repo)
+          (forge--gitlab-resolve-thread repo pr opener nil)
+        (forge--github-unresolve-thread repo pr opener))
+      (oset opener resolved-p nil)
+      (forge-refresh-buffer))))
 
 (defun forge-add-single-review-comment ()
   "Add a single (non-batch) review comment at point."

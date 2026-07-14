@@ -586,7 +586,7 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
                        "RT_thread1"))))))
 
 (ert-deftest forge-review-WR-6-gitlab-resolve-sends-put ()
-  "Resolving a GitLab thread sends PUT to the discussion endpoint with resolved=true."
+  "Resolving a GitLab thread sends PUT to the discussion endpoint with resolved=t."
   (forge-test--with-db
     (let* ((repo (forge-gitlab-repository
                   :id "repo-gl" :owner "alice" :name "proj"
@@ -599,10 +599,10 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
                      :discussion-id "disc-abc")))
       (closql-insert (forge-db) opener t)
       (let ((req (forge-test--capture-request
-                   (forge--gitlab-resolve-thread repo pr opener))))
+                   (forge--gitlab-resolve-thread repo pr opener t))))
         (should (equal (plist-get req :method) "PUT"))
         (should (string-match-p "discussions/disc-abc" (plist-get req :resource)))
-        (should (equal (alist-get 'resolved (plist-get req :data)) "true"))))))
+        (should (eq (alist-get 'resolved (plist-get req :data)) t))))))
 
 (ert-deftest forge-review-WR-7-discard-pending-removes-row ()
   "forge-discard-review-comment deletes the DB row."
@@ -716,7 +716,9 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
              (when (eq (oref section type) 'review-comment)
                (setq heading (oref section heading)))))
           (should (string-match-p "\\[resolved\\]" heading))
-          (should (string-match-p "\\[outdated\\]"  heading)))))))
+          (should (string-match-p "\\[outdated\\]"  heading))
+          (should (string-match-p "@carol" heading))
+          (should (string-match-p "line 10" heading)))))))
 
 (ert-deftest forge-review-UI-5-pending-badge ()
   "A pending comment's heading includes [pending]."
@@ -733,7 +735,8 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
            (lambda (section)
              (when (eq (oref section type) 'review-comment)
                (setq heading (oref section heading)))))
-          (should (string-match-p "\\[pending\\]" heading)))))))
+          (should (string-match-p "\\[pending\\]" heading))
+          (should (string-match-p "@carol" heading)))))))
 
 (ert-deftest forge-review-UI-6-reply-sections-are-children ()
   "Reply sections are children of the opener section in the Magit tree."
@@ -931,6 +934,130 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
       (should (not (string-match-p "<!--" result)))
       (should (string-match-p "Keep this" result))
       (should (string-match-p "And this" result)))))
+
+;;; ──────────────────────────────────────────────────────────────
+;;; Group 9: New functionality (heading, display, resolve/unresolve)
+;;; ──────────────────────────────────────────────────────────────
+
+(defun forge-test--make-heading-rc (overrides)
+  "Make a bare forge-pullreq-review-comment for heading tests (no DB)."
+  (apply #'forge-pullreq-review-comment
+         (append
+          (list :id "h-test" :their-id "x" :discussion-id "t"
+                :database-id 0 :pullreq "pr"
+                :new-path "src/foo.el" :old-path nil
+                :new-line nil :old-line nil
+                :diff-hunk nil :outdated-p nil :resolved-p nil
+                :reply-to nil :review-state nil
+                :author "alice" :body "" :created "" :updated ""
+                :reactions nil :pending-p nil)
+          overrides)))
+
+(ert-deftest forge-review-NEW-1-heading-includes-line-number ()
+  "Heading includes line number and side indicator."
+  (let* ((rc (forge-test--make-heading-rc
+              (list :new-line 42 :author "alice"))))
+    (let ((h (forge--review-comment-heading rc)))
+      (should (string-match-p "@alice" h))
+      (should (string-match-p "line 42" h))
+      (should (string-match-p "RIGHT" h)))))
+
+(ert-deftest forge-review-NEW-2-heading-old-line-left-side ()
+  "Heading says LEFT when only old-line is set."
+  (let* ((rc (forge-test--make-heading-rc
+              (list :new-path nil :old-path "src/foo.el"
+                    :new-line nil :old-line 7 :author "bob"))))
+    (let ((h (forge--review-comment-heading rc)))
+      (should (string-match-p "line 7" h))
+      (should (string-match-p "LEFT" h)))))
+
+(ert-deftest forge-review-NEW-3-heading-no-line-when-nil ()
+  "Heading omits line info when both new-line and old-line are nil."
+  (let* ((rc (forge-test--make-heading-rc (list :author "eve"))))
+    (let ((h (forge--review-comment-heading rc)))
+      (should (string-match-p "@eve" h))
+      (should-not (string-match-p "line" h)))))
+
+(ert-deftest forge-review-NEW-4-body-inserts-diff-hunk ()
+  "forge--insert-review-comment-body inserts the diff hunk before the body."
+  (let* ((rc (forge-test--make-heading-rc
+              (list :diff-hunk "@@ -1,2 +1,3 @@\n ctx\n+added\n ctx"
+                    :body "Looks good" :new-line 1))))
+    (with-temp-buffer
+      (forge--insert-review-comment-body rc)
+      (let ((text (buffer-string)))
+        (should (string-match-p "@@ -1,2" text))
+        (should (string-match-p "Looks good" text))))))
+
+(ert-deftest forge-review-NEW-5-body-inserts-reactions ()
+  "forge--insert-review-comment-body renders reactions."
+  (let* ((rc (forge-test--make-heading-rc
+              (list :body "Nice"
+                    :reactions '((thumbs-up . 3) (heart . 1))))))
+    (with-temp-buffer
+      (forge--insert-review-comment-body rc)
+      (let ((text (buffer-string)))
+        (should (string-match-p "thumbs-up 3" text))
+        (should (string-match-p "heart 1" text))))))
+
+(ert-deftest forge-review-NEW-6-github-unresolve-mutation ()
+  "forge--github-unresolve-thread calls unresolveReviewThread mutation."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (opener (forge-test--make-review-comment pr
+                     :discussion-id "RT_thread1")))
+      (closql-insert (forge-db) opener t)
+      (let ((req (forge-test--capture-request
+                   (forge--github-unresolve-thread repo pr opener))))
+        (should (eq (plist-get req :mutation) 'unresolveReviewThread))
+        (should (equal (alist-get 'threadId (plist-get req :args))
+                       "RT_thread1"))))))
+
+(ert-deftest forge-review-NEW-7-gitlab-unresolve-sends-put-false ()
+  "Unresolving a GitLab thread sends PUT with resolved=:false."
+  (forge-test--with-db
+    (let* ((repo (forge-gitlab-repository
+                  :id "repo-gl" :owner "alice" :name "proj"
+                  :forge "gitlab.com" :forge-id "456"
+                  :apihost "gitlab.com/api/v4" :githost "gitlab.com"))
+           (_ (oset repo condition :tracked))
+           (_ (closql-insert (forge-db) repo t))
+           (pr     (forge-test--make-pullreq repo))
+           (opener (forge-test--make-review-comment pr
+                     :discussion-id "disc-xyz")))
+      (closql-insert (forge-db) opener t)
+      (let ((req (forge-test--capture-request
+                   (forge--gitlab-resolve-thread repo pr opener nil))))
+        (should (equal (plist-get req :method) "PUT"))
+        (should (string-match-p "discussions/disc-xyz" (plist-get req :resource)))
+        (should (eq (alist-get 'resolved (plist-get req :data)) :false))))))
+
+(ert-deftest forge-review-NEW-8-gitlab-start-sha-uses-base-rev ()
+  "GitLab submit uses base-rev (not base-sha) as start_sha."
+  (forge-test--with-db
+    (let* ((repo (forge-gitlab-repository
+                  :id "repo-gl" :owner "alice" :name "proj"
+                  :forge "gitlab.com" :forge-id "456"
+                  :apihost "gitlab.com/api/v4" :githost "gitlab.com"))
+           (_ (oset repo condition :tracked))
+           (_ (closql-insert (forge-db) repo t))
+           (pr (forge-test--make-pullreq repo))
+           (_ (oset pr base-sha "merge-base-000"))
+           ;; base-rev is already "abc000" from make-pullreq
+           (rc (forge-test--make-review-comment pr
+                 :id "rc-1" :pending-p t :body "GL test" :new-line 5)))
+      (closql-insert (forge-db) rc t)
+      (let ((calls nil))
+        (cl-letf (((symbol-function 'forge-review--do-rest)
+                   (lambda (method resource data &optional _success)
+                     (push (list :method method :resource resource :data data)
+                           calls))))
+          (forge--submit-gitlab-review-comment repo pr))
+        (should (= (length calls) 1))
+        (let ((pos (alist-get 'position (plist-get (car calls) :data))))
+          (should (equal (alist-get 'base_sha pos) "merge-base-000"))
+          (should (equal (alist-get 'start_sha pos) "abc000")))))))
 
 ;;; _
 

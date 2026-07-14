@@ -32,6 +32,13 @@
 (require 'forge)
 (require 'forge-post)
 
+(declare-function forge-comment-pullreq          "forge-review" (pullreq))
+(declare-function forge-add-review-comment       "forge-review" ())
+(declare-function forge-add-single-review-comment "forge-review" ())
+(declare-function forge-resolve-review-thread    "forge-review" ())
+(declare-function forge-unresolve-review-thread  "forge-review" ())
+(declare-function forge-discard-review-comment-at-point "forge-review" ())
+
 (defvar bug-reference-auto-setup-functions)
 
 (define-obsolete-face-alias 'forge-topic-slug-completed
@@ -1600,7 +1607,15 @@ With prefix argument VISIT, also visit the topic."
     ("/r" "respond" forge-create-post)
     ("/c" forge-checkout-this-pullreq)
     ("/A" forge-approve-pullreq)
-    ("/R" forge-request-changes)]]
+    ("/R" forge-request-changes)]
+   ["Review"
+    :if (lambda () (forge-pullreq-p (forge-current-topic)))
+    ("/v" "submit review"  forge-comment-pullreq)
+    ("/n" "add comment"    forge-add-review-comment)
+    ("/N" "add immediate"  forge-add-single-review-comment)
+    ("/K" "discard draft"  forge-discard-review-comment-at-point)
+    ("/x" "resolve thread" forge-resolve-review-thread)
+    ("/X" "unresolve thread" forge-unresolve-review-thread)]]
   [forge--lists-group
    ["Set                                         "
     ("-c" forge-topic-set-category)
