@@ -158,9 +158,10 @@ Safe to call on an existing database; no-ops if already present."
 
 (defun forge--update-gitlab-discussion (pr-id discussion)
   "Store a single GitLab discussion (with notes) into the DB."
-  (let* ((disc-id (alist-get 'id discussion))
-         (notes   (alist-get 'notes discussion))
-         (first   t))
+  (let* ((disc-id   (alist-get 'id discussion))
+         (resolved  (eq t (alist-get 'resolved discussion)))
+         (notes     (alist-get 'notes discussion))
+         (first     t))
     (dolist (note notes)
       (let-alist note
         (let* ((reply-to (unless first disc-id))
@@ -180,7 +181,7 @@ Safe to call on an existing database; no-ops if already present."
               :old-line     .position.old_line
               :diff-hunk    nil
               :outdated-p   nil
-              :resolved-p   nil
+              :resolved-p   (when first resolved)
               :reply-to     reply-to
               :review-state nil
               :author       .author.username
@@ -380,10 +381,38 @@ EVENT is a symbol like `comment', `approve', or `request-changes'."
             (oref opener discussion-id)))
    (list (cons 'resolved (if resolved t :false)))))
 
-;;; Discard pending
+;;; Discard
+
+(defun forge--github-delete-review-comment (repo pr rc)
+  "DELETE a submitted review comment RC from GitHub."
+  (forge-review--do-rest
+   "DELETE"
+   (forge--format-resource
+    pr
+    (format "/repos/:owner/:repo/pulls/comments/%d"
+            (oref rc database-id)))
+   nil))
+
+(defun forge--gitlab-delete-review-comment (repo pr rc)
+  "DELETE a submitted review comment RC from GitLab."
+  (forge-review--do-rest
+   "DELETE"
+   (forge--format-resource
+    pr
+    (format "/projects/:project/merge_requests/:number/notes/%d"
+            (oref rc database-id)))
+   nil))
 
 (defun forge-discard-review-comment (rc)
-  "Delete the pending review comment RC from the database."
+  "Delete review comment RC from the database and the forge API.
+For pending (not-yet-submitted) comments only the local DB row is
+removed.  For submitted comments the forge API is called first."
+  (unless (oref rc pending-p)
+    (when-let* ((pr   (closql-get (forge-db) (oref rc pullreq) 'forge-pullreq))
+                (repo (forge-get-repository pr)))
+      (if (forge-gitlab-repository--eieio-childp repo)
+          (forge--gitlab-delete-review-comment repo pr rc)
+        (forge--github-delete-review-comment repo pr rc))))
   (closql-delete rc))
 
 ;;; Display – Section class with heading slot
@@ -489,24 +518,33 @@ EVENT is a symbol like `comment', `approve', or `request-changes'."
     (overlay-put ov 'forge-review-comment-object rc)
     ov))
 
+(defun forge--clear-review-comment-overlays ()
+  "Remove all forge review comment overlays from the current buffer."
+  (remove-overlays (point-min) (point-max) 'forge-review-comment t))
+
 (defun forge--maybe-insert-review-threads-in-diff ()
-  "Insert review comment overlays into the current diff buffer."
-  (when-let* ((pr (forge-current-pullreq))
-              (comments (oref pr review-comments)))
-    (dolist (rc (seq-filter (lambda (c) (null (oref c reply-to))) comments))
-      (let* ((new-path (oref rc new-path))
-             (old-path (oref rc old-path))
-             (side     (if new-path 'new 'old))
-             (line     (or (oref rc new-line) (oref rc old-line))))
-        (when line
-          (save-excursion
-            (condition-case nil
-                (progn
-                  (forge--diff-goto-line new-path old-path side line)
-                  (let ((pos (point)))
-                    (forge--place-review-comment-overlay
-                     rc pos (pos-eol))))
-              (error nil))))))))
+  "Insert review comment overlays into the current diff buffer.
+Clears any existing overlays first, then places fresh ones."
+  (when (derived-mode-p 'magit-diff-mode)
+    (forge--clear-review-comment-overlays)
+    (when-let* ((pr (forge-current-pullreq))
+                (comments (oref pr review-comments)))
+      (dolist (rc (seq-filter (lambda (c) (null (oref c reply-to))) comments))
+        (let* ((new-path (oref rc new-path))
+               (old-path (oref rc old-path))
+               (side     (if new-path 'new 'old))
+               (line     (or (oref rc new-line) (oref rc old-line))))
+          (when line
+            (save-excursion
+              (condition-case nil
+                  (progn
+                    (forge--diff-goto-line new-path old-path side line)
+                    (let ((pos (point)))
+                      (forge--place-review-comment-overlay
+                       rc pos (pos-eol))))
+                (error nil)))))))))
+
+(add-hook 'magit-refresh-buffer-hook #'forge--maybe-insert-review-threads-in-diff)
 
 ;;; Display – Diff hunk fontification
 
@@ -706,10 +744,56 @@ EVENT is a symbol like `comment', `approve', or `request-changes'."
       (oset opener resolved-p nil)
       (forge-refresh-buffer))))
 
+(defun forge--submit-add-single-review-comment ()
+  "Post a new inline comment directly to the forge API (no staging)."
+  (let* ((pr      forge--buffer-post-object)
+         (repo    (forge-get-repository pr))
+         (body    (forge--clear-comment-input (buffer-string)))
+         (result  (with-current-buffer forge--pre-post-buffer
+                    (forge--diff-line-number-at-point)))
+         (side    (if (and (consp result) (eq (car result) 'old)) 'old 'new))
+         (line    (if (and (consp result) (consp (car result)))
+                      (alist-get 'new result)
+                    (cdr result)))
+         (path    (with-current-buffer forge--pre-post-buffer
+                    (forge--diff-file-at-point))))
+    (if (forge-gitlab-repository--eieio-childp repo)
+        (forge-review--do-rest
+         "POST"
+         (forge--format-resource pr "/projects/:project/merge_requests/:number/discussions")
+         (list (cons 'body body)
+               (cons 'position
+                     (list (cons 'base_sha  (oref pr base-sha))
+                           (cons 'start_sha (oref pr base-rev))
+                           (cons 'head_sha  (oref pr head-rev))
+                           (cons 'position_type "text")
+                           (cons 'new_path  path)
+                           (cons 'old_path  (or path ""))
+                           (cons 'new_line  (when (eq side 'new) line))
+                           (cons 'old_line  (when (eq side 'old) line))))))
+      (forge-review--do-rest
+       "POST"
+       (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/comments")
+       (list (cons 'body   body)
+             (cons 'path   path)
+             (cons 'line   line)
+             (cons 'side   (if (eq side 'old) "LEFT" "RIGHT")))))
+    (forge-refresh-buffer forge--pre-post-buffer)))
+
 (defun forge-add-single-review-comment ()
-  "Add a single (non-batch) review comment at point."
+  "Add a single (non-batch) inline comment, posted directly to the API."
   (interactive)
-  (forge-add-review-comment))
+  (let* ((pr     (forge-current-pullreq t))
+         (result (forge--diff-line-number-at-point))
+         (line   (if (and (consp result) (consp (car result)))
+                     (alist-get 'new result)
+                   (cdr result))))
+    (forge--setup-post-buffer
+      'new-single-review-comment
+      #'forge--submit-add-single-review-comment
+      "review-comment"
+      (format "*forge: add immediate comment at line %s*" (or line "?"))
+      `((forge--buffer-post-object ,pr)))))
 
 (defun forge-comment-pullreq (pullreq)
   "Submit pending review comments on PULLREQ."

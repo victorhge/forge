@@ -1059,6 +1059,101 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
           (should (equal (alist-get 'base_sha pos) "merge-base-000"))
           (should (equal (alist-get 'start_sha pos) "abc000")))))))
 
+;;; ──────────────────────────────────────────────────────────────
+;;; Group 10: New items (gitlab resolved-p, discard API, approve/
+;;;           request-changes pending flush, diff overlay hook)
+;;; ──────────────────────────────────────────────────────────────
+
+(ert-deftest forge-review-NEW-9-gitlab-resolved-p-from-api ()
+  "A resolved GitLab discussion sets resolved-p=t on the opener."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (payload `((id . "disc-res")
+                      (resolved . t)
+                      (notes
+                       ((id . 601)
+                        (type . "DiffNote")
+                        (author (username . "frank"))
+                        (body . "Resolved note")
+                        (created_at . "2026-07-14T00:00:00Z")
+                        (updated_at . "2026-07-14T00:00:00Z")
+                        (position
+                         (new_path . "src/x.el") (old_path . "src/x.el")
+                         (new_line . 10) (old_line . nil)))))))
+      (forge--update-pullreq-review-comments repo pr (list payload))
+      (let ((opener (seq-find (lambda (c) (null (oref c reply-to)))
+                              (oref pr review-comments))))
+        (should opener)
+        (should (eq (oref opener resolved-p) t))))))
+
+(ert-deftest forge-review-NEW-10-gitlab-unresolved-p-from-api ()
+  "An unresolved GitLab discussion sets resolved-p=nil on the opener."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (payload `((id . "disc-unres")
+                      (resolved . :false)
+                      (notes
+                       ((id . 602)
+                        (type . "DiffNote")
+                        (author (username . "grace"))
+                        (body . "Unresolved note")
+                        (created_at . "2026-07-14T00:00:00Z")
+                        (updated_at . "2026-07-14T00:00:00Z")
+                        (position
+                         (new_path . "src/y.el") (old_path . "src/y.el")
+                         (new_line . 5) (old_line . nil)))))))
+      (forge--update-pullreq-review-comments repo pr (list payload))
+      (let ((opener (seq-find (lambda (c) (null (oref c reply-to)))
+                              (oref pr review-comments))))
+        (should opener)
+        (should (null (oref opener resolved-p)))))))
+
+(ert-deftest forge-review-NEW-11-discard-submitted-calls-api ()
+  "Discarding a submitted (non-pending) GitHub comment calls DELETE on the API."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (rc   (forge-test--make-review-comment pr
+                   :database-id 777 :pending-p nil)))
+      (closql-insert (forge-db) rc t)
+      (let ((req (forge-test--capture-request
+                   (forge-discard-review-comment rc))))
+        (should (equal (plist-get req :method) "DELETE"))
+        (should (string-match-p "pulls/comments/777" (plist-get req :resource))))
+      (should-not (closql-get (forge-db) "rc-1" 'forge-pullreq-review-comment)))))
+
+(ert-deftest forge-review-NEW-12-discard-pending-no-api-call ()
+  "Discarding a pending comment removes the DB row without calling the API."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (rc   (forge-test--make-review-comment pr :pending-p t)))
+      (closql-insert (forge-db) rc t)
+      (let ((called nil))
+        (cl-letf (((symbol-function 'forge-review--do-rest)
+                   (lambda (&rest _) (setq called t))))
+          (forge-discard-review-comment rc))
+        (should-not called))
+      (should-not (closql-get (forge-db) "rc-1" 'forge-pullreq-review-comment)))))
+
+(ert-deftest forge-review-NEW-13-diff-overlay-hook-installed ()
+  "forge--maybe-insert-review-threads-in-diff is on magit-refresh-buffer-hook."
+  (should (memq #'forge--maybe-insert-review-threads-in-diff
+                magit-refresh-buffer-hook)))
+
+(ert-deftest forge-review-NEW-14-diff-overlay-cleared-on-refresh ()
+  "forge--clear-review-comment-overlays removes forge-review-comment overlays."
+  (with-temp-buffer
+    (let ((ov (make-overlay 1 5)))
+      (overlay-put ov 'forge-review-comment t)
+      (should (cl-some (lambda (o) (overlay-get o 'forge-review-comment))
+                       (overlays-in (point-min) (point-max))))
+      (forge--clear-review-comment-overlays)
+      (should-not (cl-some (lambda (o) (overlay-get o 'forge-review-comment))
+                           (overlays-in (point-min) (point-max)))))))
+
 ;;; _
 
 (provide 'forge-review-test)
