@@ -454,6 +454,34 @@ OVERRIDES is a plist that replaces individual slots."
       (forge--diff-goto-line "src/foo.el" "src/foo.el" side n)
       (should (= (point) original-pos)))))
 
+(ert-deftest forge-review-diff-util-file-at-point ()
+  "`forge--diff-file-at-point' returns the path from the nearest +++ header."
+  (with-temp-buffer
+    (insert "diff --git a/src/foo.el b/src/foo.el\n"
+            "--- a/src/foo.el\n"
+            "+++ b/src/foo.el\n"
+            "@@ -1,2 +1,3 @@\n"
+            " ctx\n"
+            "+new\n")
+    (goto-char (point-max))
+    (should (equal (forge--diff-file-at-point) "src/foo.el"))))
+
+(ert-deftest forge-review-diff-util-file-at-point-nil-outside-diff ()
+  "`forge--diff-file-at-point' returns nil when there is no +++ header."
+  (with-temp-buffer
+    (insert "plain text, no diff header\n")
+    (goto-char (point-max))
+    (should (null (forge--diff-file-at-point)))))
+
+(ert-deftest forge-review-diff-util-find-hunk-header ()
+  "`forge--diff-find-hunk-header' returns (OLD-START NEW-START) for the enclosing hunk."
+  (forge-test--with-diff-buffer forge-test--simple-diff
+    (re-search-forward "^+(added-line-9)")
+    (beginning-of-line)
+    (pcase-let ((`(,old ,new) (forge--diff-find-hunk-header)))
+      (should (= old 8))
+      (should (= new 8)))))
+
 ;;; API / fetch mapping
 
 ;; These tests call the internal mapping helpers with canned payloads.
@@ -892,6 +920,128 @@ OVERRIDES is a plist that replaces individual slots."
       (forge-discard-review-comment rc)
       (should-not forge-test--last-request)
       (should-not (closql-get (forge-db) "rc-1" 'forge-pullreq-review-comment)))))
+
+(ert-deftest forge-review-write-gitlab-delete-comment-calls-api ()
+  "Deleting a GitLab comment sends DELETE to the notes endpoint."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-gl-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (rc   (forge-test--make-review-comment pr :database-id 42 :pending-p nil)))
+      (closql-insert (forge-db) rc t)
+      (let ((req (forge-test--capture-request
+                   (forge-discard-review-comment rc))))
+        (should (equal (plist-get req :method) "DELETE"))
+        (should (string-match-p "merge_requests.*notes/42" (plist-get req :resource)))))))
+
+(ert-deftest forge-review-write-comment-pullreq-flushes-pending ()
+  "`forge-comment-pullreq' submits all pending comments for the pullreq."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (rc   (forge-test--make-review-comment pr :pending-p t :body "Pending")))
+      (closql-insert (forge-db) rc t)
+      (let ((req (forge-test--capture-request
+                   (forge-comment-pullreq pr))))
+        (should (equal (plist-get req :method) "POST"))
+        (should (string-match-p "pulls/42/reviews" (plist-get req :resource)))))))
+
+(ert-deftest forge-review-write-resolve-updates-resolved-p-in-db ()
+  "`forge--set-review-thread-resolved' sets resolved-p on the opener after API call."
+  (forge-test--with-db
+    (let* ((repo   (forge-test--make-repo))
+           (pr     (forge-test--make-pullreq repo))
+           (opener (forge-test--make-review-comment pr
+                     :discussion-id "RT_x" :resolved-p nil)))
+      (closql-insert (forge-db) opener t)
+      (forge--review-set-thread-resolved repo pr opener t)
+      (oset opener resolved-p t)
+      (should (eq (oref (closql-get (forge-db) "rc-1"
+                                    'forge-pullreq-review-comment)
+                        resolved-p)
+                  t)))))
+
+(ert-deftest forge-review-write-submit-add-review-comment-stages-pending ()
+  "`forge--submit-add-review-comment' inserts a pending row with the correct slots."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo)))
+      (with-temp-buffer
+        (insert forge-test--simple-diff)
+        (diff-mode)
+        (goto-char (point-min))
+        (re-search-forward "^+(added-line-9)")
+        (beginning-of-line)
+        (let ((diff-buf (current-buffer)))
+          (with-temp-buffer
+            (insert "A pending comment")
+            (setq-local forge--buffer-post-object pr)
+            (setq-local forge--pre-post-buffer diff-buf)
+            (forge--submit-add-review-comment))))
+      (let* ((all (oref pr review-comments))
+             (rc  (car all)))
+        (should (= (length all) 1))
+        (should (eq (oref rc pending-p) t))
+        (should (equal (oref rc body) "A pending comment"))
+        (should (eq (oref rc new-line) 9))
+        (should (equal (oref rc new-path) "src/foo.el"))))))
+
+(ert-deftest forge-review-write-submit-edit-review-comment-updates-body ()
+  "`forge--submit-edit-review-comment' updates the body slot in the DB."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (rc   (forge-test--make-review-comment pr :body "Original")))
+      (closql-insert (forge-db) rc t)
+      (with-temp-buffer
+        (insert "Updated body")
+        (setq-local forge--buffer-post-object rc)
+        (setq-local forge--pre-post-buffer (current-buffer))
+        (forge--submit-edit-review-comment))
+      (should (equal (oref (closql-get (forge-db) "rc-1"
+                                       'forge-pullreq-review-comment)
+                           body)
+                     "Updated body")))))
+
+(ert-deftest forge-review-write-submit-add-single-review-comment-posts-to-api ()
+  "`forge--submit-add-single-review-comment' calls forge--review-post-comment."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo)))
+      (with-temp-buffer
+        (insert forge-test--simple-diff)
+        (diff-mode)
+        (goto-char (point-min))
+        (re-search-forward "^+(added-line-9)")
+        (beginning-of-line)
+        (let* ((diff-buf (current-buffer))
+               (req (forge-test--capture-request
+                      (with-temp-buffer
+                        (insert "Immediate comment")
+                        (setq-local forge--buffer-post-object pr)
+                        (setq-local forge--pre-post-buffer diff-buf)
+                        (forge--submit-add-single-review-comment)))))
+          (should (equal (plist-get req :method) "POST"))
+          (should (string-match-p "pulls/42/comments" (plist-get req :resource)))
+          (should (equal (alist-get 'body (plist-get req :data)) "Immediate comment"))
+          (should (= (alist-get 'line (plist-get req :data)) 9)))))))
+
+(ert-deftest forge-review-write-submit-review-reply-posts-to-api ()
+  "`forge--submit-review-reply' calls forge--review-post-reply with the opener."
+  (forge-test--with-db
+    (let* ((repo   (forge-test--make-repo))
+           (pr     (forge-test--make-pullreq repo))
+           (opener (forge-test--make-review-comment pr
+                     :id "rc-opener" :database-id 999 :discussion-id "t1")))
+      (closql-insert (forge-db) opener t)
+      (let ((req (forge-test--capture-request
+                   (with-temp-buffer
+                     (insert "Reply body")
+                     (setq-local forge--buffer-post-object opener)
+                     (setq-local forge--pre-post-buffer (current-buffer))
+                     (forge--submit-review-reply)))))
+        (should (string-match-p "pulls/42/comments" (plist-get req :resource)))
+        (should (= (alist-get 'in_reply_to_id (plist-get req :data)) 999))
+        (should (equal (alist-get 'body (plist-get req :data)) "Reply body"))))))
 
 ;;; Display
 
