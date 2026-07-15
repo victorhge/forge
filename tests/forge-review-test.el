@@ -301,7 +301,8 @@ OVERRIDES is a plist that replaces individual slots."
 ;; They do NOT make network requests.
 
 (defconst forge-test--github-thread-payload
-  ;; Mimics one reviewThread node from the GraphQL response.
+  ;; Mimics one reviewThread node after ghub--graphql-walk-response has
+  ;; flattened the edges/node wrappers: `comments' is a plain list of alists.
   '((id . "RT_thread1")
     (isResolved . :false)
     (isOutdated . :false)
@@ -309,25 +310,24 @@ OVERRIDES is a plist that replaces individual slots."
     (diffSide . "RIGHT")
     (line . 15)
     (comments
-     (edges
-      ((node . ((id . "RC_node1")
-                (databaseId . 201)
-                (author (login . "alice"))
-                (body . "First comment")
-                (createdAt . "2026-07-13T09:00:00Z")
-                (updatedAt . "2026-07-13T09:00:00Z")
-                (diffHunk . "@@ -13,4 +13,4 @@\n line\n-old\n+new\n line")
-                (reactionGroups . nil)
-                (pullRequestReview (state . "COMMENTED")))))
-      ((node . ((id . "RC_node2")
-                (databaseId . 202)
-                (author (login . "bob"))
-                (body . "Reply here")
-                (createdAt . "2026-07-13T10:00:00Z")
-                (updatedAt . "2026-07-13T10:00:00Z")
-                (diffHunk . "@@ -13,4 +13,4 @@\n line\n-old\n+new\n line")
-                (reactionGroups . nil)
-                (pullRequestReview (state . "COMMENTED")))))))))
+     ((id . "RC_node1")
+      (databaseId . 201)
+      (author (login . "alice"))
+      (body . "First comment")
+      (createdAt . "2026-07-13T09:00:00Z")
+      (updatedAt . "2026-07-13T09:00:00Z")
+      (diffHunk . "@@ -13,4 +13,4 @@\n line\n-old\n+new\n line")
+      (reactionGroups . nil)
+      (pullRequestReview (state . "COMMENTED")))
+     ((id . "RC_node2")
+      (databaseId . 202)
+      (author (login . "bob"))
+      (body . "Reply here")
+      (createdAt . "2026-07-13T10:00:00Z")
+      (updatedAt . "2026-07-13T10:00:00Z")
+      (diffHunk . "@@ -13,4 +13,4 @@\n line\n-old\n+new\n line")
+      (reactionGroups . nil)
+      (pullRequestReview (state . "COMMENTED"))))))
 
 (ert-deftest forge-review-API-1-github-graphql-mapping ()
   "GitHub reviewThread node maps to two DB rows with correct slot values."
@@ -440,11 +440,10 @@ OVERRIDES is a plist that replaces individual slots."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
-           ;; Patch the first comment to include a reaction group.
+           ;; Patch the first comment (flat list after ghub walk) to include a reaction group.
            (payload (copy-tree forge-test--github-thread-payload))
-           (first-edge (car (alist-get 'edges (alist-get 'comments payload))))
-           (first-node (alist-get 'node first-edge)))
-      (setf (alist-get 'reactionGroups first-node)
+           (first-comment (car (alist-get 'comments payload))))
+      (setf (alist-get 'reactionGroups first-comment)
             '(((content . "THUMBS_UP") (reactors (totalCount . 3)))))
       (forge--update-pullreq-review-comments repo pr (list payload))
       (let ((opener (seq-find (lambda (c) (null (oref c reply-to)))

@@ -1030,6 +1030,112 @@ navigating to the header that displays the detail and then typing ~C-c
 C-e~.  This older approach is still available, but it is usually much
 faster to use the menu.
 
+* Reviewing Pull-Requests
+
+Forge supports inline review comments on pull-requests (and GitLab
+merge-requests).  Review comments are anchored to a specific line in a
+specific file in the diff and belong to a /review thread/ — a top-level
+comment together with all replies to it.  Threads can be /resolved/ to
+indicate that the discussion has been addressed.
+
+After pulling a pull-request, its review threads are shown in two places:
+
+- In the topic buffer (the buffer that opens when you press ~RET~ on a
+  pull-request section), threads are shown below the conversation posts.
+  Each thread lists the file and line it is anchored to, followed by
+  all comments in the thread.
+
+- In Magit diff buffers (~magit-diff-mode~), threads appear as overlays
+  directly below the diff line they were posted on.
+
+** Adding Review Comments
+
+There are two ways to add an inline review comment: /batched/ and
+/immediate/.
+
+With the batched workflow, comments are staged locally and submitted
+together in a single review event:
+
+- Key: C-c r c [in magit-diff-mode] (forge-add-review-comment) ::
+
+  This command opens a buffer for writing a new inline review comment
+  anchored to the diff line at point.  The comment is saved locally
+  as a /pending/ comment — it is not yet posted to the forge.
+
+  To submit all pending comments at once, use ~forge-comment-pullreq~
+  (see below).
+
+With the immediate workflow, a comment is posted directly to the API
+without staging:
+
+- Key: C-c r C [in magit-diff-mode] (forge-add-single-review-comment) ::
+
+  This command opens a buffer for writing an inline comment that is
+  posted immediately to the forge when you submit, without staging.
+
+Both workflows use the same editing buffer.  Use ~C-c C-c~
+(~forge-post-submit~) to submit and ~C-c C-k~ (~forge-post-cancel~) to
+cancel.
+
+** Submitting Batched Comments
+
+- Command: forge-comment-pullreq ::
+
+  This command submits all pending (locally staged) inline review
+  comments on the current pull-request to the forge as a single
+  /comment/ review event.  It can be invoked from the topic buffer or
+  from a diff buffer that has the pull-request in context.
+
+  For GitHub, this posts a review of type ~COMMENT~.  For GitLab, each
+  pending comment is posted individually to the merge-request's
+  discussions endpoint.
+
+  After submitting, Forge pulls the updated review threads so that the
+  newly posted comments appear with their server-assigned IDs.
+
+** Managing Threads
+
+The following commands are available when point is on a review comment
+section (in the topic buffer or in a diff overlay):
+
+- Key: C-c C-r (forge-reply-to-review-comment) ::
+- Key: <remap> <magit-edit-thing> [on a review-comment section] ::
+
+  This command opens a buffer for writing a reply to the review
+  comment at point.  The reply is posted immediately to the forge.
+
+- Key: r (forge-resolve-review-thread) ::
+
+  This command marks the review thread at point as /resolved/.
+
+- Key: u (forge-unresolve-review-thread) ::
+
+  This command marks the review thread at point as /unresolved/.
+
+- Key: e (forge-edit-review-comment) ::
+
+  This command opens a buffer for editing the body of the review
+  comment at point.
+
+- Key: C-c C-k (forge-discard-review-comment-at-point) ::
+
+  This command discards (deletes) the pending review comment at point.
+  For comments that have already been posted to the forge, use
+  ~forge-discard-review-comment~ instead (available on the topic
+  buffer's ~forge-dispatch~ menu).
+
+** Navigating Threads in Diff Buffers
+
+- Command: forge-next-review-thread ::
+
+  Move point to the next review thread overlay in the current diff
+  buffer.
+
+- Command: forge-previous-review-thread ::
+
+  Move point to the previous review thread overlay in the current
+  diff buffer.
+
 * Pulling
 
 The commands that fetch forge data are available the Forge's main menu
