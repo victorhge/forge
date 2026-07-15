@@ -137,8 +137,8 @@ For context lines: returns an alist with both (old . N) and (new . N)."
           (while (not (or found (looking-at "^@@") (eobp)))
             (let ((ch (char-after)))
               (when (cond
-                      ((eq side 'new) (and (eq ch ?+) (= new-n line)))
-                      ((eq side 'old) (and (eq ch ?-) (= old-n line)))
+                      ((eq side 'new) (and (not (eq ch ?-)) (= new-n line)))
+                      ((eq side 'old) (and (not (eq ch ?+)) (= old-n line)))
                       (t              (and (not (memq ch '(?+ ?-)))
                                           (= new-n line))))
                 (setq found t)
@@ -290,10 +290,10 @@ REPLIES-BY-DISC is a hash table mapping discussion-id to reply list."
   "Insert review comment overlays into the current diff buffer.
 Clears any existing overlays first, then places fresh ones."
   (when (derived-mode-p 'magit-diff-mode)
-    (when-let* ((pr (forge-current-pullreq))
-                (comments (oref pr review-comments)))
+    (when-let* ((pr (forge-current-pullreq)))
       (forge--clear-review-comment-overlays)
-      (dolist (rc (seq-filter (lambda (c) (null (oref c reply-to))) comments))
+      (dolist (rc (seq-filter (lambda (c) (null (oref c reply-to)))
+                              (oref pr review-comments)))
         (let* ((new-path (oref rc new-path))
                (old-path (oref rc old-path))
                (side     (if new-path 'new 'old))
@@ -401,6 +401,8 @@ Clears any existing overlays first, then places fresh ones."
                     (forge--diff-line-number-at-point)))
          (path    (with-current-buffer forge--pre-post-buffer
                     (forge--diff-file-at-point)))
+         ;; result shape: (new . N) | (old . N) | ((old . N) (new . N))
+         (context-p (and result (consp (car result))))
          (rc      (forge-pullreq-review-comment
                    :id           (forge--object-id (oref pr id) (format "pending-%s" (float-time)))
                    :their-id     nil
@@ -408,8 +410,10 @@ Clears any existing overlays first, then places fresh ones."
                    :database-id  0
                    :pullreq      (oref pr id)
                    :new-path     (and result (not (eq (car result) 'old)) path)
-                   :new-line     (when (and result (eq (car result) 'new)) (cdr result))
-                   :old-line     (when (and result (eq (car result) 'old)) (cdr result))
+                   :new-line     (cond (context-p (alist-get 'new result))
+                                       ((eq (car result) 'new) (cdr result)))
+                   :old-line     (cond (context-p (alist-get 'old result))
+                                       ((eq (car result) 'old) (cdr result)))
                    :body         body
                    :pending-p    t)))
     (closql-insert (forge-db) rc t)

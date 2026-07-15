@@ -493,6 +493,18 @@ OVERRIDES is a plist that replaces individual slots."
       (forge--diff-goto-line "src/foo.el" "src/foo.el" nil 8)
       (should (= (point) original-pos)))))
 
+(ert-deftest forge-review-diff-pos-goto-line-new-side-finds-context-line ()
+  "forge--diff-goto-line with side='new locates a context line, not just '+' lines.
+Regression: the predicate previously required ch=?+ so context lines were never found."
+  (forge-test--with-diff-buffer forge-test--simple-diff
+    (re-search-forward "^ (context-line-8)")
+    (beginning-of-line)
+    (let ((original-pos (point)))
+      (goto-char (point-min))
+      ;; Context line at new-line 8; side 'new should still find it.
+      (forge--diff-goto-line "src/foo.el" "src/foo.el" 'new 8)
+      (should (= (point) original-pos)))))
+
 ;;; API / fetch mapping
 
 ;; These tests call the internal mapping helpers with canned payloads.
@@ -1078,7 +1090,32 @@ OVERRIDES is a plist that replaces individual slots."
         (should (eq (oref rc pending-p) t))
         (should (equal (oref rc body) "A pending comment"))
         (should (eq (oref rc new-line) 9))
-        (should (equal (oref rc new-path) "src/foo.el"))))))
+        (should (equal (oref rc new-path) "src/foo.el")))))
+
+(ert-deftest forge-review-write-submit-add-review-comment-context-line ()
+  "`forge--submit-add-review-comment' on a context line stores both new-line and old-line.
+Regression: (car result) was a cons cell, not a symbol, so both lines were stored as nil."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo)))
+      (with-temp-buffer
+        (insert forge-test--simple-diff)
+        (diff-mode)
+        (goto-char (point-min))
+        (re-search-forward "^ (context-line-8)")
+        (beginning-of-line)
+        (let ((diff-buf (current-buffer)))
+          (with-temp-buffer
+            (insert "Context line comment")
+            (setq-local forge--buffer-post-object pr)
+            (setq-local forge--pre-post-buffer diff-buf)
+            (forge--submit-add-review-comment))))
+      (let* ((rc (car (oref pr review-comments))))
+        (should-not (null rc))
+        ;; context-line-8 is old=8 new=8; both must be stored
+        (should (eq (oref rc new-line) 8))
+        (should (eq (oref rc old-line) 8))
+        (should (equal (oref rc new-path) "src/foo.el")))))))
 
 (ert-deftest forge-review-write-submit-edit-review-comment-updates-body ()
   "`forge--submit-edit-review-comment' updates the body slot in the DB."
@@ -1441,6 +1478,25 @@ OVERRIDES is a plist that replaces individual slots."
       (forge--clear-review-comment-overlays)
       (should-not (cl-some (lambda (o) (overlay-get o 'forge-review-comment))
                            (overlays-in (point-min) (point-max)))))))
+
+(ert-deftest forge-review-display-stale-overlays-cleared-when-review-comments-empty ()
+  "forge--maybe-insert-review-threads-in-diff clears stale overlays even when
+review-comments is empty (nil/()).
+Regression: when-let* on (comments ()) short-circuited the clear call."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo)))
+      (with-temp-buffer
+        (insert forge-test--simple-diff)
+        (magit-diff-mode)
+        ;; Place a stale overlay manually.
+        (let ((ov (make-overlay 1 5)))
+          (overlay-put ov 'forge-review-comment t))
+        (setq-local forge-buffer-topic pr)
+        ;; PR has no review comments; the overlay must still be cleared.
+        (forge--maybe-insert-review-threads-in-diff)
+        (should-not (cl-some (lambda (o) (overlay-get o 'forge-review-comment))
+                             (overlays-in (point-min) (point-max))))))))
 
 ;;; Thread navigation
 
