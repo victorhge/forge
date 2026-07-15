@@ -951,7 +951,7 @@ OVERRIDES is a plist that replaces individual slots."
                      :discussion-id "disc-xyz")))
       (closql-insert (forge-db) opener t)
       (let ((req (forge-test--capture-request
-                   (forge--review-set-thread-resolved repo pr opener nil))))
+                  (forge--review-set-thread-resolved repo pr opener nil))))
         (should (equal (plist-get req :method) "PUT"))
         (should (string-match-p "discussions/disc-xyz" (plist-get req :resource)))
         (should (eq (alist-get 'resolved (plist-get req :data)) :false))))))
@@ -972,6 +972,23 @@ OVERRIDES is a plist that replaces individual slots."
         (let ((pos (alist-get 'position (plist-get (car calls) :data))))
           (should (equal (alist-get 'base_sha pos) "merge-base-000"))
           (should (equal (alist-get 'start_sha pos) "abc000")))))))
+
+(ert-deftest forge-review-write-gitlab-old-path-falls-back-to-new-path ()
+  "When old-path is nil, GitLab submit uses new-path as old_path in the payload."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-gl-repo))
+           (pr   (forge-test--make-pullreq repo))
+           ;; old-path nil is the default from forge-test--make-review-comment
+           (rc   (forge-test--make-review-comment pr
+                   :id "rc-1" :pending-p t :body "GL test"
+                   :new-path "src/foo.el" :old-path nil :new-line 5)))
+      (closql-insert (forge-db) rc t)
+      (let* ((calls (forge-test--capture-all-requests
+                      (forge--review-submit repo pr)))
+             (pos (alist-get 'position (plist-get (car calls) :data))))
+        (should (equal (alist-get 'new_path pos) "src/foo.el"))
+        ;; old_path must fall back to new_path when old-path is nil
+        (should (equal (alist-get 'old_path pos) "src/foo.el"))))))
 
 (ert-deftest forge-review-write-discard-submitted-calls-delete-api ()
   "Discarding a submitted (non-pending) GitHub comment calls DELETE on the API."
@@ -1120,6 +1137,53 @@ OVERRIDES is a plist that replaces individual slots."
         (should (string-match-p "pulls/42/comments" (plist-get req :resource)))
         (should (= (alist-get 'in_reply_to_id (plist-get req :data)) 999))
         (should (equal (alist-get 'body (plist-get req :data)) "Reply body"))))))
+
+(ert-deftest forge-review-write-github-pending-comments-shape ()
+  "`forge--github-pending-review-comments' returns an alist with path/line/side/body."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (rc   (forge-test--make-review-comment pr
+                   :pending-p t :body "Check this" :new-path "src/x.el" :new-line 7)))
+      (closql-insert (forge-db) rc t)
+      (let ((comments (forge--github-pending-review-comments pr)))
+        (should (= (length comments) 1))
+        (let ((c (car comments)))
+          (should (equal (alist-get 'path c) "src/x.el"))
+          (should (= (alist-get 'line c) 7))
+          (should (equal (alist-get 'side c) "RIGHT"))
+          (should (equal (alist-get 'body c) "Check this")))))))
+
+(ert-deftest forge-review-write-github-flush-pending-clears-flag ()
+  "`forge--github-flush-pending-review-comments' sets pending-p nil on all rows."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (rc1  (forge-test--make-review-comment pr :id "rc-1" :pending-p t))
+           (rc2  (forge-test--make-review-comment pr :id "rc-2" :pending-p t
+                   :their-id "gh-2")))
+      (dolist (rc (list rc1 rc2))
+        (closql-insert (forge-db) rc t))
+      (forge--github-flush-pending-review-comments pr)
+      (dolist (id '("rc-1" "rc-2"))
+        (should (null (oref (closql-get (forge-db) id
+                                        'forge-pullreq-review-comment)
+                            pending-p)))))))
+
+(ert-deftest forge-review-write-gitlab-post-comment-calls-api ()
+  "`forge--review-post-comment' on a GitLab repo posts to the discussions endpoint."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-gl-repo))
+           (pr   (forge-test--make-pullreq repo)))
+      (let ((req (forge-test--capture-request
+                   (forge--review-post-comment
+                    repo pr "Immediate GL comment" "src/foo.el" 'new 5))))
+        (should (equal (plist-get req :method) "POST"))
+        (should (string-match-p "merge_requests.*discussions" (plist-get req :resource)))
+        (should (equal (alist-get 'body (plist-get req :data)) "Immediate GL comment"))
+        (let ((pos (alist-get 'position (plist-get req :data))))
+          (should (= (alist-get 'new_line pos) 5))
+          (should (null (alist-get 'old_line pos))))))))
 
 ;;; Display
 
