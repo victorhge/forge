@@ -482,6 +482,17 @@ OVERRIDES is a plist that replaces individual slots."
       (should (= old 8))
       (should (= new 8)))))
 
+(ert-deftest forge-review-diff-pos-goto-line-context-line ()
+  "forge--diff-goto-line navigates to a context line with side nil."
+  (forge-test--with-diff-buffer forge-test--simple-diff
+    (re-search-forward "^ (context-line-8)")
+    (beginning-of-line)
+    (let ((original-pos (point)))
+      (goto-char (point-min))
+      ;; side nil triggers the t branch: seeks a non-+/- line where new-n = 8.
+      (forge--diff-goto-line "src/foo.el" "src/foo.el" nil 8)
+      (should (= (point) original-pos)))))
+
 ;;; API / fetch mapping
 
 ;; These tests call the internal mapping helpers with canned payloads.
@@ -712,6 +723,73 @@ OVERRIDES is a plist that replaces individual slots."
                               (oref pr review-comments))))
         (should opener)
         (should (null (oref opener resolved-p)))))))
+
+(ert-deftest forge-review-api-github-review-state-stored ()
+  "pullRequestReview.state is lowercased and stored as review-state symbol."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (payload (copy-tree forge-test--github-thread-payload))
+           (first-comment (car (alist-get 'comments payload))))
+      (setf (alist-get 'pullRequestReview first-comment)
+            '((state . "APPROVED")))
+      (forge--update-pullreq-review-comments repo pr (list payload))
+      (let ((opener (seq-find (lambda (c) (null (oref c reply-to)))
+                              (oref pr review-comments))))
+        (should (eq (oref opener review-state) 'approved))))))
+
+(ert-deftest forge-review-api-github-refresh-replaces-rows ()
+  "Calling update twice with the same thread replaces rows, not duplicates them."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo)))
+      (forge--update-pullreq-review-comments
+       repo pr (list forge-test--github-thread-payload))
+      (forge--update-pullreq-review-comments
+       repo pr (list forge-test--github-thread-payload))
+      (should (= (length (oref pr review-comments)) 2)))))
+
+(ert-deftest forge-review-api-gitlab-note-without-position-skipped ()
+  "A GitLab note without a position (system note) is not inserted into the DB."
+  (forge-test--with-db
+    (let* ((repo (forge-gitlab-repository
+                  :id forge-test--gl-repo-id :owner "alice" :name "proj"
+                  :forge "gitlab.com" :forge-id "456"
+                  :apihost "gitlab.com/api/v4" :githost "gitlab.com"))
+           (_ (oset repo condition :tracked))
+           (_ (closql-insert (forge-db) repo t))
+           (pr  (forge-pullreq
+                 :id forge-test--gl-pr-id :repository forge-test--gl-repo-id
+                 :number 42 :state 'open :author "bob" :title "MR"
+                 :base-ref "main" :base-rev "abc000"
+                 :head-ref "feature" :head-rev "def999" :body ""))
+           (_ (closql-insert (forge-db) pr t))
+           ;; A discussion whose only note has no position (system note).
+           (payload '((id . "sys-disc")
+                      (notes
+                       ((id . 700)
+                        (type . "Note")
+                        (author (username . "system"))
+                        (body . "mentioned in commit abc")
+                        (created_at . "2026-07-14T00:00:00Z")
+                        (updated_at . "2026-07-14T00:00:00Z"))))))
+      (forge--update-pullreq-review-comments repo pr (list payload))
+      (should (null (oref pr review-comments))))))
+
+(ert-deftest forge-review-api-github-bool-all-cases ()
+  "forge--github-bool converts t→t, :false→nil, nil→nil."
+  (should (eq (forge--github-bool t) t))
+  (should (eq (forge--github-bool :false) nil))
+  (should (eq (forge--github-bool nil) nil)))
+
+(ert-deftest forge-review-api-reaction-groups-zero-count-excluded ()
+  "forge--reaction-groups-to-alist drops groups with totalCount=0 and handles nil."
+  (should (null (forge--reaction-groups-to-alist nil)))
+  (let ((groups '(((content . "THUMBS_UP") (reactors (totalCount . 0)))
+                  ((content . "HEART")     (reactors (totalCount . 2))))))
+    (let ((result (forge--reaction-groups-to-alist groups)))
+      (should (= (length result) 1))
+      (should (equal (car result) '(heart . 2))))))
 
 ;;; Write operations
 
