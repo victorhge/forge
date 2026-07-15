@@ -27,8 +27,8 @@
 (require 'forge-issue)
 (require 'forge-pullreq)
 
-(declare-function forge--update-pullreq-review-comments "forge-review"
-                  (repo pr threads))
+(declare-function forge-review--do-rest   "forge-review" (method resource data &optional success))
+(declare-function forge-review--do-mutate "forge-review" (mutation args))
 
 ;;; Class
 
@@ -1339,6 +1339,128 @@
            (magit-call-git "pull" "--ff-only" remote (magit-pull-arguments))
            (magit-call-git "branch" "-d" branch)
            (forge-refresh-buffer)))))))
+
+;;; Review comment helpers
+
+(defun forge--github-bool (val)
+  "Convert GitHub JSON boolean (t/:false/nil) to Elisp boolean."
+  (cond ((eq val t) t)
+        ((eq val :false) nil)
+        (t val)))
+
+(defun forge--reaction-groups-to-alist (groups)
+  "Convert GitHub reactionGroups list to an alist of (SYMBOL . COUNT)."
+  (when groups
+    (delq nil
+          (mapcar (lambda (g)
+                    (let-alist g
+                      (let ((n .reactors.totalCount))
+                        (when (and n (> n 0))
+                          (cons (intern (downcase
+                                         (replace-regexp-in-string
+                                          "_" "-" .content)))
+                                n)))))
+                  groups))))
+
+;;; Review – fetch / mapping
+
+(cl-defmethod forge--update-pullreq-review-comments
+  ((_repo forge-github-repository) pr threads)
+  "Map GitHub reviewThread THREADS into DB rows for PR."
+  (closql-with-transaction (forge-db)
+    (let ((pr-id (oref pr id)))
+      (dolist (thread threads)
+        (let-alist thread
+          (let* ((thread-id .id)
+                 (resolved  (forge--github-bool .isResolved))
+                 (outdated  (forge--github-bool .isOutdated))
+                 (left-side (equal .diffSide "LEFT"))
+                 (line      .line)
+                 (path      .path)
+                 (comments  (alist-get 'comments thread))
+                 (opener-their-id nil))
+            (dolist (comment comments)
+              (let-alist comment
+                (let* ((is-opener (null opener-their-id))
+                       (rc-id     (forge--object-id pr-id .id))
+                       (reply-to  (unless is-opener thread-id))
+                       (state2    (when-let ((r .pullRequestReview))
+                                    (intern (downcase (alist-get 'state r))))))
+                  (when is-opener
+                    (setq opener-their-id .id))
+                  (closql-insert
+                   (forge-db)
+                   (forge-pullreq-review-comment
+                    :id           rc-id
+                    :their-id     .id
+                    :discussion-id thread-id
+                    :database-id  .databaseId
+                    :pullreq      pr-id
+                    :new-path     (unless left-side path)
+                    :old-path     (when left-side path)
+                    :new-line     (unless left-side line)
+                    :old-line     (when left-side line)
+                    :diff-hunk    .diffHunk
+                    :outdated-p   outdated
+                    :resolved-p   (unless is-opener nil)
+                    :reply-to     reply-to
+                    :review-state state2
+                    :author       .author.login
+                    :body         (forge--sanitize-string .body)
+                    :created      .createdAt
+                    :updated      .updatedAt
+                    :reactions    (forge--reaction-groups-to-alist .reactionGroups)
+                    :pending-p    nil)
+                   t))))))))))
+
+;;; Review – write operations
+
+(cl-defmethod forge--review-submit ((_repo forge-github-repository) pr)
+  "POST all pending review comments for PR to GitHub as a COMMENT review."
+  (let ((comments (forge--github-pending-review-comments pr))
+        (data     (list (cons 'event "COMMENT")
+                        (cons 'body  ""))))
+    (when comments
+      (push (cons 'comments comments) data))
+    (forge-review--do-rest
+     "POST"
+     (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/reviews")
+     data)
+    (forge--github-flush-pending-review-comments pr)))
+
+(cl-defmethod forge--review-post-reply ((_repo forge-github-repository) pr opener text)
+  "POST a reply to OPENER's thread on GitHub."
+  (forge-review--do-rest
+   "POST"
+   (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/comments")
+   (list (cons 'body           text)
+         (cons 'in_reply_to_id (oref opener database-id)))))
+
+(cl-defmethod forge--review-set-thread-resolved
+  ((_repo forge-github-repository) _pr opener resolved)
+  "Resolve or unresolve the GitHub review thread at OPENER."
+  (forge-review--do-mutate
+   (if resolved 'resolveReviewThread 'unresolveReviewThread)
+   (list (cons 'threadId (oref opener discussion-id)))))
+
+(cl-defmethod forge--review-delete-comment ((_repo forge-github-repository) pr rc)
+  "DELETE a submitted review comment RC from GitHub."
+  (forge-review--do-rest
+   "DELETE"
+   (forge--format-resource
+    pr
+    (format "/repos/:owner/:repo/pulls/comments/%d" (oref rc database-id)))
+   nil))
+
+(cl-defmethod forge--review-post-comment ((_repo forge-github-repository) pr body path side line)
+  "POST a single immediate inline comment at PATH SIDE LINE on GitHub."
+  (forge-review--do-rest
+   "POST"
+   (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/comments")
+   (list (cons 'body body)
+         (cons 'path path)
+         (cons 'line line)
+         (cons 'side (if (eq side 'old) "LEFT" "RIGHT")))))
 
 ;;; _
 ;; Local Variables:

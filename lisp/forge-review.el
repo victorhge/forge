@@ -29,8 +29,6 @@
 (require 'forge-pullreq)
 (require 'forge-topic)
 
-(declare-function forge-gitlab-repository--eieio-childp "forge-gitlab" (obj))
-
 ;;; Class
 
 (defclass forge-pullreq-review-comment (closql-object)
@@ -74,124 +72,10 @@ Safe to call on an existing database; no-ops if already present."
     (emacsql db [:alter-table pullreq :add-column review-comments
                  :default 'eieio-unbound])))
 
-;;; Fetch / Mapping
+;;; Fetch / Mapping – generics (methods live in forge-github.el / forge-gitlab.el)
 
-(defun forge--reaction-groups-to-alist (groups)
-  "Convert GitHub reactionGroups list to an alist of (SYMBOL . COUNT)."
-  (when groups
-    (delq nil
-          (mapcar (lambda (g)
-                    (let-alist g
-                      (let ((n .reactors.totalCount))
-                        (when (and n (> n 0))
-                          (cons (intern (downcase
-                                         (replace-regexp-in-string
-                                          "_" "-" .content)))
-                                n)))))
-                  groups))))
-
-(defun forge--update-pullreq-review-comments (repo pr threads)
-  "Store THREADS (GitHub reviewThreads or GitLab discussions) under PR."
-  (closql-with-transaction (forge-db)
-    (let ((pr-id (oref pr id)))
-      (dolist (thread threads)
-        (cond
-          ;; GitHub: has `comments' edges
-          ((alist-get 'comments thread)
-           (forge--update-github-review-thread pr-id thread))
-          ;; GitLab: has `notes' list
-          ((alist-get 'notes thread)
-           (forge--update-gitlab-discussion pr-id thread)))))))
-
-(defun forge--update-github-review-thread (pr-id thread)
-  "Store a single GitHub reviewThread into the DB."
-  (let-alist thread
-    (let* ((thread-id .id)
-           (resolved  (forge--github-bool .isResolved))
-           (outdated  (forge--github-bool .isOutdated))
-           (left-side (equal .diffSide "LEFT"))
-           (line      .line)
-           (path      .path)
-           (comments  (alist-get 'comments thread))
-           (opener-their-id nil))
-      (dolist (comment comments)
-        (let-alist comment
-          (let* ((is-opener (null opener-their-id))
-                 (rc-id     (forge--object-id pr-id .id))
-                 (reply-to  (unless is-opener thread-id))
-                 (state2    (when-let ((r .pullRequestReview))
-                              (intern (downcase (alist-get 'state r))))))
-            (when is-opener
-              (setq opener-their-id .id))
-            (closql-insert
-             (forge-db)
-             (forge-pullreq-review-comment
-              :id           rc-id
-              :their-id     .id
-              :discussion-id thread-id
-              :database-id  .databaseId
-              :pullreq      pr-id
-              :new-path     (unless left-side path)
-              :old-path     (when left-side path)
-              :new-line     (unless left-side line)
-              :old-line     (when left-side line)
-              :diff-hunk    .diffHunk
-              :outdated-p   outdated
-              :resolved-p   (unless is-opener nil)
-              :reply-to     reply-to
-              :review-state state2
-              :author       .author.login
-              :body         (forge--sanitize-string .body)
-              :created      .createdAt
-              :updated      .updatedAt
-              :reactions    (forge--reaction-groups-to-alist .reactionGroups)
-              :pending-p    nil)
-             t)))))))
-
-;; TODO: move forge--github-bool to forge-github.el and update all call sites
-;; there to use it instead of inlining the same cond.
-(defun forge--github-bool (val)
-  "Convert GitHub JSON boolean (t/:false/nil) to Elisp boolean."
-  (cond ((eq val t) t)
-        ((eq val :false) nil)
-        (t val)))
-
-(defun forge--update-gitlab-discussion (pr-id discussion)
-  "Store a single GitLab discussion (with notes) into the DB."
-  (let* ((disc-id   (alist-get 'id discussion))
-         (resolved  (eq t (alist-get 'resolved discussion)))
-         (notes     (alist-get 'notes discussion))
-         (first     t))
-    (dolist (note notes)
-      (let-alist note
-        (let* ((reply-to (unless first disc-id))
-               (rc-id    (forge--object-id pr-id (number-to-string .id))))
-          (when .position
-            (closql-insert
-             (forge-db)
-             (forge-pullreq-review-comment
-              :id           rc-id
-              :their-id     (number-to-string .id)
-              :discussion-id disc-id
-              :database-id  .id
-              :pullreq      pr-id
-              :new-path     .position.new_path
-              :old-path     .position.old_path
-              :new-line     .position.new_line
-              :old-line     .position.old_line
-              :diff-hunk    nil
-              :outdated-p   nil
-              :resolved-p   (when first resolved)
-              :reply-to     reply-to
-              :review-state nil
-              :author       .author.username
-              :body         (forge--sanitize-string .body)
-              :created      .created_at
-              :updated      .updated_at
-              :reactions    nil
-              :pending-p    nil)
-             t))
-          (setq first nil))))))
+(cl-defgeneric forge--update-pullreq-review-comments (repo pr threads)
+  "Map API THREADS (review threads or discussions) into DB rows for PR.")
 
 
 ;;; Diff Line-Number Computation
@@ -286,113 +170,25 @@ DATA is an alist of request body parameters."
     (ghub--prepare-mutation mutation)
     (list (cons 'input args))))
 
-;;; Write Operations – GitHub
+;;; Write Operations – generics (methods live in forge-github.el / forge-gitlab.el)
 
-(defun forge--submit-github-review (repo pr event)
-  "POST all pending review comments for PR to GitHub as a batch review.
-EVENT is a symbol like `comment', `approve', or `request-changes'."
-  (let ((comments (forge--github-pending-review-comments pr))
-        (data     (list (cons 'event (upcase (symbol-name event)))
-                        (cons 'body  ""))))
-    (when comments
-      (push (cons 'comments comments) data))
-    (forge-review--do-rest
-     "POST"
-     (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/reviews")
-     data)
-    (forge--github-flush-pending-review-comments pr)))
+(cl-defgeneric forge--review-submit (repo pr)
+  "Submit pending review comments on PR to the forge as a COMMENT review.")
 
-(defun forge--github-post-reply (repo pr opener text)
-  "POST a reply to OPENER's thread on GitHub."
-  (forge-review--do-rest
-   "POST"
-   (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/comments")
-   (list (cons 'body          text)
-         (cons 'in_reply_to_id (oref opener database-id)))))
+(cl-defgeneric forge--review-post-reply (repo pr opener text)
+  "Post TEXT as a reply to the thread whose opener is OPENER.")
 
-(defun forge--github-resolve-thread (repo pr opener)
-  "Resolve the GitHub review thread identified by OPENER's discussion-id."
-  (forge-review--do-mutate
-   'resolveReviewThread
-   (list (cons 'threadId (oref opener discussion-id)))))
+(cl-defgeneric forge--review-set-thread-resolved (repo pr opener resolved)
+  "Resolve (RESOLVED t) or unresolve (RESOLVED nil) the thread at OPENER.")
 
-(defun forge--github-unresolve-thread (repo pr opener)
-  "Unresolve the GitHub review thread identified by OPENER's discussion-id."
-  (forge-review--do-mutate
-   'unresolveReviewThread
-   (list (cons 'threadId (oref opener discussion-id)))))
+(cl-defgeneric forge--review-delete-comment (repo pr rc)
+  "Delete review comment RC from the forge.")
 
-;;; Write Operations – GitLab
-
-(defun forge--submit-gitlab-review-comment (repo pr)
-  "POST each pending review comment for PR to GitLab individually."
-  (let* ((pending (seq-filter
-                   (lambda (rc) (oref rc pending-p))
-                   (oref pr review-comments)))
-         (base-sha (oref pr base-sha))
-         (start-sha (oref pr base-rev))
-         (head-sha (oref pr head-rev)))
-    (dolist (rc pending)
-      (let* ((pos (list (cons 'base_sha  base-sha)
-                        (cons 'start_sha start-sha)
-                        (cons 'head_sha  head-sha)
-                        (cons 'position_type "text")
-                        (cons 'new_path  (oref rc new-path))
-                        (cons 'old_path  (or (oref rc old-path) (oref rc new-path)))
-                        (cons 'new_line  (oref rc new-line))
-                        (cons 'old_line  (oref rc old-line))))
-             (data (list (cons 'body     (oref rc body))
-                         (cons 'position pos))))
-        (forge-review--do-rest
-         "POST"
-         (forge--format-resource pr "/projects/:project/merge_requests/:number/discussions")
-         data)))))
-
-(defun forge--gitlab-post-reply (repo pr opener text)
-  "POST a reply to OPENER's discussion on GitLab."
-  (forge-review--do-rest
-   "POST"
-   (forge--format-resource
-    pr
-    (format "/projects/:project/merge_requests/:number/discussions/%s/notes"
-            (oref opener discussion-id)))
-   (list (cons 'body text))))
-
-(defun forge--gitlab-resolve-thread (repo pr opener resolved)
-  "PUT resolved=RESOLVED for OPENER's discussion on GitLab."
-  (forge-review--do-rest
-   "PUT"
-   (forge--format-resource
-    pr
-    (format "/projects/:project/merge_requests/:number/discussions/%s"
-            (oref opener discussion-id)))
-   (list (cons 'resolved (if resolved t :false)))))
+(cl-defgeneric forge--review-post-comment (repo pr body path side line)
+  "Post BODY as a single immediate inline comment at PATH SIDE LINE.")
 
 ;;; Discard
 
-(defun forge--github-delete-review-comment (repo pr rc)
-  "DELETE a submitted review comment RC from GitHub."
-  (forge-review--do-rest
-   "DELETE"
-   (forge--format-resource
-    pr
-    (format "/repos/:owner/:repo/pulls/comments/%d"
-            (oref rc database-id)))
-   nil))
-
-(defun forge--gitlab-delete-review-comment (repo pr rc)
-  "DELETE a submitted review comment RC from GitLab."
-  (forge-review--do-rest
-   "DELETE"
-   (forge--format-resource
-    pr
-    (format "/projects/:project/merge_requests/:number/notes/%d"
-            (oref rc database-id)))
-   nil))
-
-;; TODO: all forge-type dispatch in this file (forge-gitlab-repository--eieio-childp
-;; guards) should be converted to cl-defmethod specializing on the repo class,
-;; matching the pattern used throughout forge-github.el / forge-gitlab.el.
 (defun forge-discard-review-comment (rc)
   "Delete review comment RC from the database and the forge API.
 For pending (not-yet-submitted) comments only the local DB row is
@@ -400,9 +196,7 @@ removed.  For submitted comments the forge API is called first."
   (unless (oref rc pending-p)
     (when-let* ((pr   (closql-get (forge-db) (oref rc pullreq) 'forge-pullreq))
                 (repo (forge-get-repository pr)))
-      (if (forge-gitlab-repository--eieio-childp repo)
-          (forge--gitlab-delete-review-comment repo pr rc)
-        (forge--github-delete-review-comment repo pr rc))))
+      (forge--review-delete-comment repo pr rc)))
   (closql-delete rc))
 
 ;;; Display – Section class with heading slot
@@ -654,9 +448,7 @@ Clears any existing overlays first, then places fresh ones."
          (pr     (closql-get (forge-db) (oref opener pullreq) 'forge-pullreq))
          (repo   (forge-get-repository pr))
          (body   (forge--clear-comment-input (buffer-string))))
-    (if (forge-gitlab-repository--eieio-childp repo)
-        (forge--gitlab-post-reply repo pr opener body)
-      (forge--github-post-reply repo pr opener body))
+    (forge--review-post-reply repo pr opener body)
     (forge-refresh-buffer forge--pre-post-buffer)))
 
 (defun forge--diff-file-at-point ()
@@ -714,11 +506,7 @@ Clears any existing overlays first, then places fresh ones."
   (when-let ((opener (magit-section-value-if 'review-comment)))
     (let* ((pr   (closql-get (forge-db) (oref opener pullreq) 'forge-pullreq))
            (repo (forge-get-repository pr)))
-      (if (forge-gitlab-repository--eieio-childp repo)
-          (forge--gitlab-resolve-thread repo pr opener resolved)
-        (if resolved
-            (forge--github-resolve-thread repo pr opener)
-          (forge--github-unresolve-thread repo pr opener)))
+      (forge--review-set-thread-resolved repo pr opener resolved)
       (oset opener resolved-p resolved)
       (forge-refresh-buffer))))
 
@@ -745,27 +533,7 @@ Clears any existing overlays first, then places fresh ones."
                     (cdr result)))
          (path    (with-current-buffer forge--pre-post-buffer
                     (forge--diff-file-at-point))))
-    (if (forge-gitlab-repository--eieio-childp repo)
-        (forge-review--do-rest
-         "POST"
-         (forge--format-resource pr "/projects/:project/merge_requests/:number/discussions")
-         (list (cons 'body body)
-               (cons 'position
-                     (list (cons 'base_sha  (oref pr base-sha))
-                           (cons 'start_sha (oref pr base-rev))
-                           (cons 'head_sha  (oref pr head-rev))
-                           (cons 'position_type "text")
-                           (cons 'new_path  path)
-                           (cons 'old_path  (or path ""))
-                           (cons 'new_line  (when (eq side 'new) line))
-                           (cons 'old_line  (when (eq side 'old) line))))))
-      (forge-review--do-rest
-       "POST"
-       (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/comments")
-       (list (cons 'body   body)
-             (cons 'path   path)
-             (cons 'line   line)
-             (cons 'side   (if (eq side 'old) "LEFT" "RIGHT")))))
+    (forge--review-post-comment repo pr body path side line)
     (forge-refresh-buffer forge--pre-post-buffer)))
 
 (defun forge-add-single-review-comment ()
@@ -786,10 +554,7 @@ Clears any existing overlays first, then places fresh ones."
 (defun forge-comment-pullreq (pullreq)
   "Submit pending review comments on PULLREQ."
   (interactive (list (forge-current-pullreq t)))
-  (let ((repo (forge-get-repository pullreq)))
-    (if (forge-gitlab-repository--eieio-childp repo)
-        (forge--submit-gitlab-review-comment repo pullreq)
-      (forge--submit-github-review repo pullreq 'comment))))
+  (forge--review-submit (forge-get-repository pullreq) pullreq))
 
 ;;; _
 ;; Local Variables:

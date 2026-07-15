@@ -403,8 +403,18 @@ OVERRIDES is a plist that replaces individual slots."
 (ert-deftest forge-review-API-3-gitlab-discussions-mapping ()
   "GitLab discussion maps to three DB rows; opener has new-line; replies have reply-to."
   (forge-test--with-db
-    (let* ((repo (forge-test--make-repo))
-           (pr   (forge-test--make-pullreq repo)))
+    (let* ((repo (forge-gitlab-repository
+                  :id forge-test--gl-repo-id :owner "alice" :name "proj"
+                  :forge "gitlab.com" :forge-id "456"
+                  :apihost "gitlab.com/api/v4" :githost "gitlab.com"))
+           (_ (oset repo condition :tracked))
+           (_ (closql-insert (forge-db) repo t))
+           (pr   (forge-pullreq
+                  :id forge-test--gl-pr-id :repository forge-test--gl-repo-id
+                  :number 42 :state 'open :author "bob" :title "MR"
+                  :base-ref "main" :base-rev "abc000"
+                  :head-ref "feature" :head-rev "def999" :body ""))
+           (_ (closql-insert (forge-db) pr t)))
       (forge--update-pullreq-review-comments
        repo pr (list forge-test--gitlab-discussion-payload))
       (let* ((all    (oref pr review-comments))
@@ -420,8 +430,8 @@ OVERRIDES is a plist that replaces individual slots."
   "base-sha slot on a pullreq can be set and read back."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
-           (pr   (forge-test--make-pullreq repo)))
-      (oset pr base-sha "deadbeef")
+           (pr   (forge-test--make-pullreq repo))
+           (_ (oset pr base-sha "deadbeef")))
       (should (equal (oref pr base-sha) "deadbeef")))))
 
 (ert-deftest forge-review-API-5-outdated-thread ()
@@ -490,7 +500,7 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
       (dolist (rc (list rc1 rc2))
         (closql-insert (forge-db) rc t))
       (let ((req (forge-test--capture-request
-                   (forge--submit-github-review repo pr 'comment))))
+                   (forge--review-submit repo pr))))
         (should (equal (plist-get req :method) "POST"))
         (should (string-match-p "pulls/42/reviews" (plist-get req :resource)))
         (let ((comments (alist-get 'comments (plist-get req :data))))
@@ -524,7 +534,7 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
                    (lambda (method resource data &optional _success)
                      (push (list :method method :resource resource :data data)
                            calls))))
-          (forge--submit-gitlab-review-comment repo pr))
+          (forge--review-submit repo pr))
         (should (= (length calls) 2))
         (cl-every
          (lambda (c)
@@ -545,7 +555,7 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
                      :id "rc-opener" :database-id 999 :discussion-id "t1")))
       (closql-insert (forge-db) opener t)
       (let ((req (forge-test--capture-request
-                   (forge--github-post-reply repo pr opener "Reply text"))))
+                   (forge--review-post-reply repo pr opener "Reply text"))))
         (should (string-match-p "pulls/42/comments" (plist-get req :resource)))
         (should (= (alist-get 'in_reply_to_id (plist-get req :data)) 999))))))
 
@@ -563,7 +573,7 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
                      :id "rc-opener" :discussion-id "disc-abc")))
       (closql-insert (forge-db) opener t)
       (let ((req (forge-test--capture-request
-                   (forge--gitlab-post-reply repo pr opener "Reply text"))))
+                   (forge--review-post-reply repo pr opener "Reply text"))))
         (should (string-match-p "discussions/disc-abc/notes"
                                 (plist-get req :resource)))))))
 
@@ -576,7 +586,7 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
                      :discussion-id "RT_thread1")))
       (closql-insert (forge-db) opener t)
       (let ((req (forge-test--capture-request
-                   (forge--github-resolve-thread repo pr opener))))
+                   (forge--review-set-thread-resolved repo pr opener t))))
         (should (eq (plist-get req :mutation) 'resolveReviewThread))
         (should (equal (alist-get 'threadId (plist-get req :args))
                        "RT_thread1"))))))
@@ -595,7 +605,7 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
                      :discussion-id "disc-abc")))
       (closql-insert (forge-db) opener t)
       (let ((req (forge-test--capture-request
-                   (forge--gitlab-resolve-thread repo pr opener t))))
+                   (forge--review-set-thread-resolved repo pr opener t))))
         (should (equal (plist-get req :method) "PUT"))
         (should (string-match-p "discussions/disc-abc" (plist-get req :resource)))
         (should (eq (alist-get 'resolved (plist-get req :data)) t))))))
@@ -624,7 +634,7 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
         (closql-insert (forge-db) rc t))
       ;; Simulate the success callback that the submit function fires.
       (cl-letf (((symbol-function 'forge-review--do-rest) #'ignore))
-        (forge--submit-github-review repo pr 'comment))
+        (forge--review-submit repo pr))
       (dolist (id '("rc-1" "rc-2"))
         (let ((fetched (closql-get (forge-db) id 'forge-pullreq-review-comment)))
           (should (null (oref fetched pending-p))))))))
@@ -997,7 +1007,7 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
         (should (string-match-p "heart 1" text))))))
 
 (ert-deftest forge-review-NEW-6-github-unresolve-mutation ()
-  "forge--github-unresolve-thread calls unresolveReviewThread mutation."
+  "forge--review-set-thread-resolved with nil calls unresolveReviewThread mutation."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
@@ -1005,7 +1015,7 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
                      :discussion-id "RT_thread1")))
       (closql-insert (forge-db) opener t)
       (let ((req (forge-test--capture-request
-                   (forge--github-unresolve-thread repo pr opener))))
+                   (forge--review-set-thread-resolved repo pr opener nil))))
         (should (eq (plist-get req :mutation) 'unresolveReviewThread))
         (should (equal (alist-get 'threadId (plist-get req :args))
                        "RT_thread1"))))))
@@ -1024,7 +1034,7 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
                      :discussion-id "disc-xyz")))
       (closql-insert (forge-db) opener t)
       (let ((req (forge-test--capture-request
-                   (forge--gitlab-resolve-thread repo pr opener nil))))
+                   (forge--review-set-thread-resolved repo pr opener nil))))
         (should (equal (plist-get req :method) "PUT"))
         (should (string-match-p "discussions/disc-xyz" (plist-get req :resource)))
         (should (eq (alist-get 'resolved (plist-get req :data)) :false))))))
@@ -1049,7 +1059,7 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
                    (lambda (method resource data &optional _success)
                      (push (list :method method :resource resource :data data)
                            calls))))
-          (forge--submit-gitlab-review-comment repo pr))
+          (forge--review-submit repo pr))
         (should (= (length calls) 1))
         (let ((pos (alist-get 'position (plist-get (car calls) :data))))
           (should (equal (alist-get 'base_sha pos) "merge-base-000"))
@@ -1063,8 +1073,18 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
 (ert-deftest forge-review-NEW-9-gitlab-resolved-p-from-api ()
   "A resolved GitLab discussion sets resolved-p=t on the opener."
   (forge-test--with-db
-    (let* ((repo (forge-test--make-repo))
-           (pr   (forge-test--make-pullreq repo))
+    (let* ((repo (forge-gitlab-repository
+                  :id forge-test--gl-repo-id :owner "alice" :name "proj"
+                  :forge "gitlab.com" :forge-id "456"
+                  :apihost "gitlab.com/api/v4" :githost "gitlab.com"))
+           (_ (oset repo condition :tracked))
+           (_ (closql-insert (forge-db) repo t))
+           (pr  (forge-pullreq
+                 :id forge-test--gl-pr-id :repository forge-test--gl-repo-id
+                 :number 42 :state 'open :author "bob" :title "MR"
+                 :base-ref "main" :base-rev "abc000"
+                 :head-ref "feature" :head-rev "def999" :body ""))
+           (_ (closql-insert (forge-db) pr t))
            (payload `((id . "disc-res")
                       (resolved . t)
                       (notes
@@ -1086,8 +1106,18 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
 (ert-deftest forge-review-NEW-10-gitlab-unresolved-p-from-api ()
   "An unresolved GitLab discussion sets resolved-p=nil on the opener."
   (forge-test--with-db
-    (let* ((repo (forge-test--make-repo))
-           (pr   (forge-test--make-pullreq repo))
+    (let* ((repo (forge-gitlab-repository
+                  :id forge-test--gl-repo-id :owner "alice" :name "proj"
+                  :forge "gitlab.com" :forge-id "456"
+                  :apihost "gitlab.com/api/v4" :githost "gitlab.com"))
+           (_ (oset repo condition :tracked))
+           (_ (closql-insert (forge-db) repo t))
+           (pr  (forge-pullreq
+                 :id forge-test--gl-pr-id :repository forge-test--gl-repo-id
+                 :number 42 :state 'open :author "bob" :title "MR"
+                 :base-ref "main" :base-rev "abc000"
+                 :head-ref "feature" :head-rev "def999" :body ""))
+           (_ (closql-insert (forge-db) pr t))
            (payload `((id . "disc-unres")
                       (resolved . :false)
                       (notes

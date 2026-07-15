@@ -26,8 +26,7 @@
 (require 'forge-issue)
 (require 'forge-pullreq)
 
-(declare-function forge--update-pullreq-review-comments "forge-review"
-                  (repo pr threads))
+(declare-function forge-review--do-rest "forge-review" (method resource data &optional success))
 
 ;;; Class
 
@@ -709,6 +708,117 @@
     :noerror noerror :reader reader
     :callback callback
     :errorback (or errorback (and callback t))))
+
+;;; Review – fetch / mapping
+
+(cl-defmethod forge--update-pullreq-review-comments
+  ((_repo forge-gitlab-repository) pr threads)
+  "Map GitLab discussion THREADS into DB rows for PR."
+  (closql-with-transaction (forge-db)
+    (let ((pr-id (oref pr id)))
+      (dolist (discussion threads)
+        (let* ((disc-id  (alist-get 'id discussion))
+               (resolved (eq t (alist-get 'resolved discussion)))
+               (notes    (alist-get 'notes discussion))
+               (first    t))
+          (dolist (note notes)
+            (let-alist note
+              (let* ((reply-to (unless first disc-id))
+                     (rc-id    (forge--object-id pr-id (number-to-string .id))))
+                (when .position
+                  (closql-insert
+                   (forge-db)
+                   (forge-pullreq-review-comment
+                    :id           rc-id
+                    :their-id     (number-to-string .id)
+                    :discussion-id disc-id
+                    :database-id  .id
+                    :pullreq      pr-id
+                    :new-path     .position.new_path
+                    :old-path     .position.old_path
+                    :new-line     .position.new_line
+                    :old-line     .position.old_line
+                    :diff-hunk    nil
+                    :outdated-p   nil
+                    :resolved-p   (when first resolved)
+                    :reply-to     reply-to
+                    :review-state nil
+                    :author       .author.username
+                    :body         (forge--sanitize-string .body)
+                    :created      .created_at
+                    :updated      .updated_at
+                    :reactions    nil
+                    :pending-p    nil)
+                   t))
+                (setq first nil)))))))))
+
+;;; Review – write operations
+
+(cl-defmethod forge--review-submit ((_repo forge-gitlab-repository) pr)
+  "POST each pending review comment for PR to GitLab individually."
+  (let* ((pending   (seq-filter (lambda (rc) (oref rc pending-p))
+                                (oref pr review-comments)))
+         (base-sha  (oref pr base-sha))
+         (start-sha (oref pr base-rev))
+         (head-sha  (oref pr head-rev)))
+    (dolist (rc pending)
+      (forge-review--do-rest
+       "POST"
+       (forge--format-resource pr "/projects/:project/merge_requests/:number/discussions")
+       (list (cons 'body     (oref rc body))
+             (cons 'position (list (cons 'base_sha  base-sha)
+                                   (cons 'start_sha start-sha)
+                                   (cons 'head_sha  head-sha)
+                                   (cons 'position_type "text")
+                                   (cons 'new_path  (oref rc new-path))
+                                   (cons 'old_path  (or (oref rc old-path) (oref rc new-path)))
+                                   (cons 'new_line  (oref rc new-line))
+                                   (cons 'old_line  (oref rc old-line)))))))))
+
+(cl-defmethod forge--review-post-reply ((_repo forge-gitlab-repository) pr opener text)
+  "POST a reply to OPENER's discussion on GitLab."
+  (forge-review--do-rest
+   "POST"
+   (forge--format-resource
+    pr
+    (format "/projects/:project/merge_requests/:number/discussions/%s/notes"
+            (oref opener discussion-id)))
+   (list (cons 'body text))))
+
+(cl-defmethod forge--review-set-thread-resolved
+  ((_repo forge-gitlab-repository) pr opener resolved)
+  "PUT resolved=RESOLVED for OPENER's discussion on GitLab."
+  (forge-review--do-rest
+   "PUT"
+   (forge--format-resource
+    pr
+    (format "/projects/:project/merge_requests/:number/discussions/%s"
+            (oref opener discussion-id)))
+   (list (cons 'resolved (if resolved t :false)))))
+
+(cl-defmethod forge--review-delete-comment ((_repo forge-gitlab-repository) pr rc)
+  "DELETE a submitted review comment RC from GitLab."
+  (forge-review--do-rest
+   "DELETE"
+   (forge--format-resource
+    pr
+    (format "/projects/:project/merge_requests/:number/notes/%d" (oref rc database-id)))
+   nil))
+
+(cl-defmethod forge--review-post-comment ((_repo forge-gitlab-repository) pr body path side line)
+  "POST a single immediate inline comment at PATH SIDE LINE on GitLab."
+  (forge-review--do-rest
+   "POST"
+   (forge--format-resource pr "/projects/:project/merge_requests/:number/discussions")
+   (list (cons 'body body)
+         (cons 'position (list (cons 'base_sha  (oref pr base-sha))
+                               (cons 'start_sha (oref pr base-rev))
+                               (cons 'head_sha  (oref pr head-rev))
+                               (cons 'position_type "text")
+                               (cons 'new_path  path)
+                               (cons 'old_path  (or path ""))
+                               (cons 'new_line  (when (eq side 'new) line))
+                               (cons 'old_line  (when (eq side 'old) line)))))))
 
 ;;; _
 ;; Local Variables:
