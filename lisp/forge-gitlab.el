@@ -26,7 +26,6 @@
 (require 'forge-issue)
 (require 'forge-pullreq)
 
-(declare-function forge-review--do-rest "forge-review" (method resource data &optional success))
 
 ;;; Class
 
@@ -762,63 +761,52 @@
          (start-sha (oref pr base-rev))
          (head-sha  (oref pr head-rev)))
     (dolist (rc pending)
-      (forge-review--do-rest
-       "POST"
-       (forge--format-resource pr "/projects/:project/merge_requests/:number/discussions")
-       (list (cons 'body     (oref rc body))
-             (cons 'position (list (cons 'base_sha  base-sha)
-                                   (cons 'start_sha start-sha)
-                                   (cons 'head_sha  head-sha)
-                                   (cons 'position_type "text")
-                                   (cons 'new_path  (oref rc new-path))
-                                   (cons 'old_path  (or (oref rc old-path) (oref rc new-path)))
-                                   (cons 'new_line  (oref rc new-line))
-                                   (cons 'old_line  (oref rc old-line)))))))))
+      (forge--rest pr "POST"
+        "/projects/:project/merge_requests/:number/discussions"
+        (list (cons 'body     (oref rc body))
+              (cons 'position (list (cons 'base_sha  base-sha)
+                                    (cons 'start_sha start-sha)
+                                    (cons 'head_sha  head-sha)
+                                    (cons 'position_type "text")
+                                    (cons 'new_path  (oref rc new-path))
+                                    (cons 'old_path  (or (oref rc old-path) (oref rc new-path)))
+                                    (cons 'new_line  (oref rc new-line))
+                                    (cons 'old_line  (oref rc old-line)))))))))
 
 (cl-defmethod forge--review-post-reply ((_repo forge-gitlab-repository) pr opener text)
   "POST a reply to OPENER's discussion on GitLab."
-  (forge-review--do-rest
-   "POST"
-   (forge--format-resource
-    pr
+  (forge--rest pr "POST"
     (format "/projects/:project/merge_requests/:number/discussions/%s/notes"
-            (oref opener discussion-id)))
-   (list (cons 'body text))))
+            (oref opener discussion-id))
+    (list (cons 'body text))))
 
 (cl-defmethod forge--review-set-thread-resolved
   ((_repo forge-gitlab-repository) pr opener resolved)
   "PUT resolved=RESOLVED for OPENER's discussion on GitLab."
-  (forge-review--do-rest
-   "PUT"
-   (forge--format-resource
-    pr
+  (forge--rest pr "PUT"
     (format "/projects/:project/merge_requests/:number/discussions/%s"
-            (oref opener discussion-id)))
-   (list (cons 'resolved (if resolved t :false)))))
+            (oref opener discussion-id))
+    (list (cons 'resolved (if resolved t :false)))))
 
 (cl-defmethod forge--review-delete-comment ((_repo forge-gitlab-repository) pr rc)
   "DELETE a submitted review comment RC from GitLab."
-  (forge-review--do-rest
-   "DELETE"
-   (forge--format-resource
-    pr
-    (format "/projects/:project/merge_requests/:number/notes/%d" (oref rc database-id)))
-   nil))
+  (forge--rest pr "DELETE"
+    (format "/projects/:project/merge_requests/:number/notes/%d" (oref rc database-id))
+    nil))
 
 (cl-defmethod forge--review-post-comment ((_repo forge-gitlab-repository) pr body path side line)
   "POST a single immediate inline comment at PATH SIDE LINE on GitLab."
-  (forge-review--do-rest
-   "POST"
-   (forge--format-resource pr "/projects/:project/merge_requests/:number/discussions")
-   (list (cons 'body body)
-         (cons 'position (list (cons 'base_sha  (oref pr base-sha))
-                               (cons 'start_sha (oref pr base-rev))
-                               (cons 'head_sha  (oref pr head-rev))
-                               (cons 'position_type "text")
-                               (cons 'new_path  path)
-                               (cons 'old_path  (or path ""))
-                               (cons 'new_line  (when (eq side 'new) line))
-                               (cons 'old_line  (when (eq side 'old) line)))))))
+  (forge--rest pr "POST"
+    "/projects/:project/merge_requests/:number/discussions"
+    (list (cons 'body body)
+          (cons 'position (list (cons 'base_sha  (oref pr base-sha))
+                                (cons 'start_sha (oref pr base-rev))
+                                (cons 'head_sha  (oref pr head-rev))
+                                (cons 'position_type "text")
+                                (cons 'new_path  path)
+                                (cons 'old_path  (or path ""))
+                                (cons 'new_line  (when (eq side 'new) line))
+                                (cons 'old_line  (when (eq side 'old) line)))))))
 
 ;;; _
 ;; Local Variables:

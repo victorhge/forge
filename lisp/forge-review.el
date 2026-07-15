@@ -150,26 +150,6 @@ For context lines: returns an alist with both (old . N) and (new . N)."
                   (t           (cl-incf old-n) (cl-incf new-n)))
                 (forward-line 1)))))))))
 
-;;; Write Operations – thin wrappers for testing
-
-(defun forge-review--do-rest (method resource data &optional success)
-  "Perform a REST request.  Thin wrapper to allow stubbing in tests.
-METHOD is a string like \"POST\", RESOURCE is a pre-formatted path,
-DATA is an alist of request body parameters."
-  ;; When called for real (not stubbed), infer the host from the resource.
-  ;; Tests stub this function directly, so the body here is rarely executed.
-  (ghub-request method resource nil
-    :auth 'forge
-    :body (json-encode data)
-    :headers '(("Content-Type" . "application/json"))
-    :callback success))
-
-(defun forge-review--do-mutate (mutation args)
-  "Perform a GraphQL mutation.  Thin wrapper to allow stubbing in tests."
-  (forge--query nil
-    (ghub--prepare-mutation mutation)
-    (list (cons 'input args))))
-
 ;;; Write Operations – generics (methods live in forge-github.el / forge-gitlab.el)
 
 (cl-defgeneric forge--review-submit (repo pr)

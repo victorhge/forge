@@ -57,9 +57,160 @@ The real `forge-database-file' is never touched."
   ;; base64("gitlab.com/alice/proj:42")
   "Z2l0bGFiLmNvbS9hbGljZS9wcm9qOjQy")
 
+;;; Fake forge subclasses for write-operation tests
+;;
+;; Instead of patching global functions with cl-letf, tests that exercise
+;; write operations use these subclasses.  The stub methods record what
+;; would have been sent to the API without making any network calls.
+;;
+;; `forge-test--last-request' holds the most-recently captured call as a
+;; plist.  `forge-test--all-requests' accumulates every call within a
+;; capture block; clear it with (setq forge-test--all-requests nil).
+
+(defvar forge-test--last-request nil)
+(defvar forge-test--all-requests nil)
+
+(defun forge-test--record-rest (method resource data)
+  (let ((entry (list :method method :resource resource :data data)))
+    (setq forge-test--last-request entry)
+    (push entry forge-test--all-requests)))
+
+(defun forge-test--record-mutate (mutation args)
+  (let ((entry (list :mutation mutation :args args)))
+    (setq forge-test--last-request entry)
+    (push entry forge-test--all-requests)))
+
+(defclass forge-test-github-repository (forge-github-repository) ()
+  "Fake GitHub repository class whose write methods record calls instead of
+hitting the network.  Use `forge-test--make-repo' to create instances.")
+
+(cl-defmethod forge--review-submit ((_repo forge-test-github-repository) pr)
+  (let ((comments (forge--github-pending-review-comments pr))
+        (data     (list (cons 'event "COMMENT") (cons 'body ""))))
+    (when comments (push (cons 'comments comments) data))
+    (forge-test--record-rest
+     "POST"
+     (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/reviews")
+     data)
+    (forge--github-flush-pending-review-comments pr)))
+
+(cl-defmethod forge--review-post-reply
+  ((_repo forge-test-github-repository) pr opener text)
+  (forge-test--record-rest
+   "POST"
+   (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/comments")
+   (list (cons 'body text) (cons 'in_reply_to_id (oref opener database-id)))))
+
+(cl-defmethod forge--review-set-thread-resolved
+  ((_repo forge-test-github-repository) _pr opener resolved)
+  (forge-test--record-mutate
+   (if resolved 'resolveReviewThread 'unresolveReviewThread)
+   (list (cons 'threadId (oref opener discussion-id)))))
+
+(cl-defmethod forge--review-delete-comment
+  ((_repo forge-test-github-repository) pr rc)
+  (forge-test--record-rest
+   "DELETE"
+   (forge--format-resource
+    pr (format "/repos/:owner/:repo/pulls/comments/%d" (oref rc database-id)))
+   nil))
+
+(cl-defmethod forge--review-post-comment
+  ((_repo forge-test-github-repository) pr body path side line)
+  (forge-test--record-rest
+   "POST"
+   (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/comments")
+   (list (cons 'body body) (cons 'path path) (cons 'line line)
+         (cons 'side (if (eq side 'old) "LEFT" "RIGHT")))))
+
+(defclass forge-test-gitlab-repository (forge-gitlab-repository) ()
+  "Fake GitLab repository class whose write methods record calls instead of
+hitting the network.  Use `forge-test--make-gl-repo' to create instances.")
+
+(cl-defmethod forge--review-submit ((_repo forge-test-gitlab-repository) pr)
+  (let* ((pending   (seq-filter (lambda (rc) (oref rc pending-p))
+                                (oref pr review-comments)))
+         (base-sha  (oref pr base-sha))
+         (start-sha (oref pr base-rev))
+         (head-sha  (oref pr head-rev)))
+    (dolist (rc pending)
+      (forge-test--record-rest
+       "POST"
+       (forge--format-resource pr "/projects/:project/merge_requests/:number/discussions")
+       (list (cons 'body (oref rc body))
+             (cons 'position (list (cons 'base_sha  base-sha)
+                                   (cons 'start_sha start-sha)
+                                   (cons 'head_sha  head-sha)
+                                   (cons 'position_type "text")
+                                   (cons 'new_path  (oref rc new-path))
+                                   (cons 'old_path  (or (oref rc old-path) (oref rc new-path)))
+                                   (cons 'new_line  (oref rc new-line))
+                                   (cons 'old_line  (oref rc old-line)))))))))
+
+(cl-defmethod forge--review-post-reply
+  ((_repo forge-test-gitlab-repository) pr opener text)
+  (forge-test--record-rest
+   "POST"
+   (forge--format-resource
+    pr (format "/projects/:project/merge_requests/:number/discussions/%s/notes"
+               (oref opener discussion-id)))
+   (list (cons 'body text))))
+
+(cl-defmethod forge--review-set-thread-resolved
+  ((_repo forge-test-gitlab-repository) pr opener resolved)
+  (forge-test--record-rest
+   "PUT"
+   (forge--format-resource
+    pr (format "/projects/:project/merge_requests/:number/discussions/%s"
+               (oref opener discussion-id)))
+   (list (cons 'resolved (if resolved t :false)))))
+
+(cl-defmethod forge--review-delete-comment
+  ((_repo forge-test-gitlab-repository) pr rc)
+  (forge-test--record-rest
+   "DELETE"
+   (forge--format-resource
+    pr (format "/projects/:project/merge_requests/:number/notes/%d"
+               (oref rc database-id)))
+   nil))
+
+(cl-defmethod forge--review-post-comment
+  ((_repo forge-test-gitlab-repository) pr body path side line)
+  (forge-test--record-rest
+   "POST"
+   (forge--format-resource pr "/projects/:project/merge_requests/:number/discussions")
+   (list (cons 'body body)
+         (cons 'position (list (cons 'base_sha  (oref pr base-sha))
+                               (cons 'start_sha (oref pr base-rev))
+                               (cons 'head_sha  (oref pr head-rev))
+                               (cons 'position_type "text")
+                               (cons 'new_path  path)
+                               (cons 'old_path  (or path ""))
+                               (cons 'new_line  (when (eq side 'new) line))
+                               (cons 'old_line  (when (eq side 'old) line)))))))
+
+(defmacro forge-test--capture-request (&rest body)
+  "Execute BODY, returning the last captured REST/mutate call as a plist.
+Relies on the fake repo subclasses recording into `forge-test--last-request'."
+  (declare (indent 0))
+  `(progn
+     (setq forge-test--last-request nil
+           forge-test--all-requests nil)
+     ,@body
+     forge-test--last-request))
+
+(defmacro forge-test--capture-all-requests (&rest body)
+  "Execute BODY, returning all captured calls in order (first call first)."
+  (declare (indent 0))
+  `(progn
+     (setq forge-test--last-request nil
+           forge-test--all-requests nil)
+     ,@body
+     (nreverse forge-test--all-requests)))
+
 (defun forge-test--make-repo ()
-  "Insert and return a minimal forge-github-repository into the current DB."
-  (let* ((repo (forge-github-repository
+  "Insert and return a minimal forge-test-github-repository into the current DB."
+  (let* ((repo (forge-test-github-repository
                 :id       forge-test--repo-id
                 :forge-id "123"
                 :forge    "github.com"
@@ -67,6 +218,20 @@ The real `forge-database-file' is never touched."
                 :name     "myrepo"
                 :apihost  "api.github.com"
                 :githost  "github.com")))
+    (oset repo condition :tracked)
+    (closql-insert (forge-db) repo t)
+    repo))
+
+(defun forge-test--make-gl-repo ()
+  "Insert and return a minimal forge-test-gitlab-repository into the current DB."
+  (let* ((repo (forge-test-gitlab-repository
+                :id       forge-test--gl-repo-id
+                :forge-id "456"
+                :forge    "gitlab.com"
+                :owner    "alice"
+                :name     "proj"
+                :apihost  "gitlab.com/api/v4"
+                :githost  "gitlab.com")))
     (oset repo condition :tracked)
     (closql-insert (forge-db) repo t)
     repo))
@@ -464,28 +629,10 @@ OVERRIDES is a plist that replaces individual slots."
 ;;; Group 4: Write operations
 ;;; ──────────────────────────────────────────────────────────────
 
-;; These tests capture the payload that would be sent to the API by
-;; intercepting the forge-rest / forge-mutate call.
-
-(defmacro forge-test--capture-request (&rest body)
-  "Execute BODY, capturing the last REST/mutate call.
-Stubs `forge-review--do-rest' and `forge-review--do-mutate'.
-Returns a plist with :method, :resource, :data, or :mutation/:args."
-  (declare (indent 0))
-  (let ((captured (make-symbol "captured")))
-    `(let (,captured)
-       (cl-letf (((symbol-function 'forge-review--do-rest)
-                  (lambda (method resource data &optional _success)
-                    (setq ,captured
-                          (list :method   method
-                                :resource resource
-                                :data     data))))
-                 ((symbol-function 'forge-review--do-mutate)
-                  (lambda (mutation args)
-                    (setq ,captured
-                          (list :mutation mutation :args args)))))
-         ,@body
-         ,captured))))
+;; These tests exercise the write generics via the fake subclasses
+;; (forge-test-github-repository, forge-test-gitlab-repository) defined
+;; above.  The stub methods record what would be sent to the API without
+;; making any network calls.  Use forge-test--make-repo / forge-test--make-gl-repo.
 
 (ert-deftest forge-review-WR-1-github-batch-submit ()
   "Submitting two pending GitHub comments produces a single POST to the reviews endpoint."
@@ -513,13 +660,7 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
 (ert-deftest forge-review-WR-2-gitlab-per-comment-post ()
   "Submitting two pending GitLab comments produces two POST requests, each with position."
   (forge-test--with-db
-    (let* ((repo    (forge-gitlab-repository
-                     :id "repo-gl" :owner "alice" :name "proj"
-                     :forge "gitlab.com" :forge-id "456"
-                     :apihost "gitlab.com/api/v4" :githost "gitlab.com"
-                     ))
-           (_ (oset repo condition :tracked))
-           (_ (closql-insert (forge-db) repo t))
+    (let* ((repo (forge-test--make-gl-repo))
            (pr   (forge-test--make-pullreq repo))
            (_ (oset pr base-sha "base000"))
            (rc1  (forge-test--make-review-comment pr
@@ -529,12 +670,8 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
                    :their-id "gl-note-2")))
       (dolist (rc (list rc1 rc2))
         (closql-insert (forge-db) rc t))
-      (let ((calls nil))
-        (cl-letf (((symbol-function 'forge-review--do-rest)
-                   (lambda (method resource data &optional _success)
-                     (push (list :method method :resource resource :data data)
-                           calls))))
-          (forge--review-submit repo pr))
+      (let ((calls (forge-test--capture-all-requests
+                     (forge--review-submit repo pr))))
         (should (= (length calls) 2))
         (cl-every
          (lambda (c)
@@ -562,12 +699,7 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
 (ert-deftest forge-review-WR-4-gitlab-reply-uses-discussion-endpoint ()
   "Replying to a GitLab comment posts to the discussion notes sub-endpoint."
   (forge-test--with-db
-    (let* ((repo (forge-gitlab-repository
-                  :id "repo-gl" :owner "alice" :name "proj"
-                  :forge "gitlab.com" :forge-id "456"
-                  :apihost "gitlab.com/api/v4" :githost "gitlab.com"))
-           (_ (oset repo condition :tracked))
-           (_ (closql-insert (forge-db) repo t))
+    (let* ((repo   (forge-test--make-gl-repo))
            (pr     (forge-test--make-pullreq repo))
            (opener (forge-test--make-review-comment pr
                      :id "rc-opener" :discussion-id "disc-abc")))
@@ -594,12 +726,7 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
 (ert-deftest forge-review-WR-6-gitlab-resolve-sends-put ()
   "Resolving a GitLab thread sends PUT to the discussion endpoint with resolved=t."
   (forge-test--with-db
-    (let* ((repo (forge-gitlab-repository
-                  :id "repo-gl" :owner "alice" :name "proj"
-                  :forge "gitlab.com" :forge-id "456"
-                  :apihost "gitlab.com/api/v4" :githost "gitlab.com"))
-           (_ (oset repo condition :tracked))
-           (_ (closql-insert (forge-db) repo t))
+    (let* ((repo   (forge-test--make-gl-repo))
            (pr     (forge-test--make-pullreq repo))
            (opener (forge-test--make-review-comment pr
                      :discussion-id "disc-abc")))
@@ -632,9 +759,7 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
                    :id "rc-2" :pending-p t :body "B" :their-id "gh-2")))
       (dolist (rc (list rc1 rc2))
         (closql-insert (forge-db) rc t))
-      ;; Simulate the success callback that the submit function fires.
-      (cl-letf (((symbol-function 'forge-review--do-rest) #'ignore))
-        (forge--review-submit repo pr))
+      (forge--review-submit repo pr)
       (dolist (id '("rc-1" "rc-2"))
         (let ((fetched (closql-get (forge-db) id 'forge-pullreq-review-comment)))
           (should (null (oref fetched pending-p))))))))
@@ -1023,12 +1148,7 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
 (ert-deftest forge-review-NEW-7-gitlab-unresolve-sends-put-false ()
   "Unresolving a GitLab thread sends PUT with resolved=:false."
   (forge-test--with-db
-    (let* ((repo (forge-gitlab-repository
-                  :id "repo-gl" :owner "alice" :name "proj"
-                  :forge "gitlab.com" :forge-id "456"
-                  :apihost "gitlab.com/api/v4" :githost "gitlab.com"))
-           (_ (oset repo condition :tracked))
-           (_ (closql-insert (forge-db) repo t))
+    (let* ((repo   (forge-test--make-gl-repo))
            (pr     (forge-test--make-pullreq repo))
            (opener (forge-test--make-review-comment pr
                      :discussion-id "disc-xyz")))
@@ -1042,24 +1162,15 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
 (ert-deftest forge-review-NEW-8-gitlab-start-sha-uses-base-rev ()
   "GitLab submit uses base-rev (not base-sha) as start_sha."
   (forge-test--with-db
-    (let* ((repo (forge-gitlab-repository
-                  :id "repo-gl" :owner "alice" :name "proj"
-                  :forge "gitlab.com" :forge-id "456"
-                  :apihost "gitlab.com/api/v4" :githost "gitlab.com"))
-           (_ (oset repo condition :tracked))
-           (_ (closql-insert (forge-db) repo t))
-           (pr (forge-test--make-pullreq repo))
-           (_ (oset pr base-sha "merge-base-000"))
+    (let* ((repo (forge-test--make-gl-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (_    (oset pr base-sha "merge-base-000"))
            ;; base-rev is already "abc000" from make-pullreq
-           (rc (forge-test--make-review-comment pr
-                 :id "rc-1" :pending-p t :body "GL test" :new-line 5)))
+           (rc   (forge-test--make-review-comment pr
+                   :id "rc-1" :pending-p t :body "GL test" :new-line 5)))
       (closql-insert (forge-db) rc t)
-      (let ((calls nil))
-        (cl-letf (((symbol-function 'forge-review--do-rest)
-                   (lambda (method resource data &optional _success)
-                     (push (list :method method :resource resource :data data)
-                           calls))))
-          (forge--review-submit repo pr))
+      (let ((calls (forge-test--capture-all-requests
+                     (forge--review-submit repo pr))))
         (should (= (length calls) 1))
         (let ((pos (alist-get 'position (plist-get (car calls) :data))))
           (should (equal (alist-get 'base_sha pos) "merge-base-000"))
@@ -1157,11 +1268,9 @@ Returns a plist with :method, :resource, :data, or :mutation/:args."
            (pr   (forge-test--make-pullreq repo))
            (rc   (forge-test--make-review-comment pr :pending-p t)))
       (closql-insert (forge-db) rc t)
-      (let ((called nil))
-        (cl-letf (((symbol-function 'forge-review--do-rest)
-                   (lambda (&rest _) (setq called t))))
-          (forge-discard-review-comment rc))
-        (should-not called))
+      (setq forge-test--last-request nil)
+      (forge-discard-review-comment rc)
+      (should-not forge-test--last-request)
       (should-not (closql-get (forge-db) "rc-1" 'forge-pullreq-review-comment)))))
 
 (ert-deftest forge-review-NEW-13-diff-overlay-hook-installed ()

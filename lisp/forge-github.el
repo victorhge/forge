@@ -27,8 +27,6 @@
 (require 'forge-issue)
 (require 'forge-pullreq)
 
-(declare-function forge-review--do-rest   "forge-review" (method resource data &optional success))
-(declare-function forge-review--do-mutate "forge-review" (mutation args))
 
 ;;; Class
 
@@ -1422,45 +1420,40 @@
                         (cons 'body  ""))))
     (when comments
       (push (cons 'comments comments) data))
-    (forge-review--do-rest
-     "POST"
-     (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/reviews")
-     data)
+    (forge--rest pr "POST"
+      "/repos/:owner/:repo/pulls/:number/reviews"
+      data)
     (forge--github-flush-pending-review-comments pr)))
 
 (cl-defmethod forge--review-post-reply ((_repo forge-github-repository) pr opener text)
   "POST a reply to OPENER's thread on GitHub."
-  (forge-review--do-rest
-   "POST"
-   (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/comments")
-   (list (cons 'body           text)
-         (cons 'in_reply_to_id (oref opener database-id)))))
+  (forge--rest pr "POST"
+    "/repos/:owner/:repo/pulls/:number/comments"
+    (list (cons 'body           text)
+          (cons 'in_reply_to_id (oref opener database-id)))))
 
 (cl-defmethod forge--review-set-thread-resolved
   ((_repo forge-github-repository) _pr opener resolved)
   "Resolve or unresolve the GitHub review thread at OPENER."
-  (forge-review--do-mutate
-   (if resolved 'resolveReviewThread 'unresolveReviewThread)
-   (list (cons 'threadId (oref opener discussion-id)))))
+  (forge--query pr
+    (ghub--prepare-mutation
+     (if resolved 'resolveReviewThread 'unresolveReviewThread))
+    (list (cons 'input (list (cons 'threadId (oref opener discussion-id)))))))
 
 (cl-defmethod forge--review-delete-comment ((_repo forge-github-repository) pr rc)
   "DELETE a submitted review comment RC from GitHub."
-  (forge-review--do-rest
-   "DELETE"
-   (forge--format-resource
-    pr
-    (format "/repos/:owner/:repo/pulls/comments/%d" (oref rc database-id)))
-   nil))
+  (forge--rest pr "DELETE"
+    (format "/repos/:owner/:repo/pulls/comments/%d" (oref rc database-id))
+    nil))
 
 (cl-defmethod forge--review-post-comment ((_repo forge-github-repository) pr body path side line)
   "POST a single immediate inline comment at PATH SIDE LINE on GitHub."
-  (forge-review--do-rest
-   "POST"
-   (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/comments")
-   (list (cons 'body body)
-         (cons 'path path)
-         (cons 'line line)
-         (cons 'side (if (eq side 'old) "LEFT" "RIGHT")))))
+  (forge--rest pr "POST"
+    "/repos/:owner/:repo/pulls/:number/comments"
+    (list (cons 'body body)
+          (cons 'path path)
+          (cons 'line line)
+          (cons 'side (if (eq side 'old) "LEFT" "RIGHT")))))
 
 ;;; _
 ;; Local Variables:
