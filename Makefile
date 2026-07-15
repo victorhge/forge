@@ -1,7 +1,7 @@
 -include config.mk
 include default.mk
 
-.PHONY: lisp docs test
+.PHONY: lisp docs test test-integration
 
 all: lisp docs
 
@@ -14,11 +14,20 @@ test:
 	  --eval "(require 'forge-review-test)" \
 	  -f ert-run-tests-batch-and-exit
 
+test-integration:
+	@$(EMACS) -Q --batch \
+	  --eval "(require 'package)" \
+	  --eval "(package-initialize)" \
+	  -L ./lisp -L ./tests \
+	  --eval "(require 'forge-review-integration-test)" \
+	  -f ert-run-tests-batch-and-exit
+
 help:
 	$(info make all          -- Generate lisp and manual)
 	$(info make lisp         -- Generate byte-code and autoloads)
 	$(info make redo         -- Re-generate byte-code and autoloads)
-	$(info make test         -- Run ERT test suite)
+	$(info make test              -- Run ERT test suite)
+	$(info make test-integration  -- Run integration tests (requires FORGE_TEST_GITHUB_REPO))
 	$(info make docs         -- Generate all manual formats)
 	$(info make redo-docs    -- Re-generate all manual formats)
 	$(info make texi         -- Generate texi manual)
