@@ -1052,20 +1052,87 @@ Regression: the predicate previously required ch=?+ so context lines were never 
         (should (equal (plist-get req :method) "POST"))
         (should (string-match-p "pulls/42/reviews" (plist-get req :resource)))))))
 
-(ert-deftest forge-review-write-resolve-updates-resolved-p-in-db ()
-  "`forge--set-review-thread-resolved' sets resolved-p on the opener after API call."
+(defmacro forge-test--with-section-at-rc (rc &rest body)
+  "Run BODY with point inside a review-comment section whose value is RC.
+Uses `magit-insert-section' to build a minimal Magit section tree so that
+`magit-section-value-if' returns RC at point."
+  (declare (indent 1))
+  `(with-temp-buffer
+     (magit-insert-section (topicbuf)
+       (magit-insert-section section (review-comment ,rc)
+         (insert "thread\n")))
+     (goto-char (point-min))
+     ,@body))
+
+(ert-deftest forge-review-write-set-thread-resolved-calls-api-and-updates-db ()
+  "`forge--set-review-thread-resolved' (coordinator) calls the generic AND sets
+resolved-p in the DB — both effects in one call, not separately."
   (forge-test--with-db
     (let* ((repo   (forge-test--make-repo))
            (pr     (forge-test--make-pullreq repo))
            (opener (forge-test--make-review-comment pr
                      :discussion-id "RT_x" :resolved-p nil)))
       (closql-insert (forge-db) opener t)
-      (forge--review-set-thread-resolved repo pr opener t)
-      (oset opener resolved-p t)
-      (should (eq (oref (closql-get (forge-db) "rc-1"
-                                    'forge-pullreq-review-comment)
-                        resolved-p)
-                  t)))))
+      (forge-test--with-section-at-rc opener
+        (let ((req (forge-test--capture-request
+                     (forge--set-review-thread-resolved t))))
+          (should (eq (plist-get req :mutation) 'resolveReviewThread))
+          (should (equal (alist-get 'threadId (plist-get req :args)) "RT_x"))
+          (should (eq (oref (closql-get (forge-db) "rc-1"
+                                        'forge-pullreq-review-comment)
+                            resolved-p)
+                      t)))))))
+
+(ert-deftest forge-review-write-discard-at-point-removes-row ()
+  "`forge-discard-review-comment-at-point' removes the DB row via section dispatch."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (rc   (forge-test--make-review-comment pr :pending-p t)))
+      (closql-insert (forge-db) rc t)
+      (should (closql-get (forge-db) "rc-1" 'forge-pullreq-review-comment))
+      (forge-test--with-section-at-rc rc
+        (forge-discard-review-comment-at-point))
+      (should-not (closql-get (forge-db) "rc-1" 'forge-pullreq-review-comment)))))
+
+(ert-deftest forge-review-write-resolve-at-point-calls-api-and-updates-db ()
+  "`forge-resolve-review-thread' dispatches via section, fires the mutation,
+and sets resolved-p t in the DB."
+  (forge-test--with-db
+    (let* ((repo   (forge-test--make-repo))
+           (pr     (forge-test--make-pullreq repo))
+           (opener (forge-test--make-review-comment pr
+                     :discussion-id "RT_resolve" :resolved-p nil)))
+      (closql-insert (forge-db) opener t)
+      (forge-test--with-section-at-rc opener
+        (let ((req (forge-test--capture-request
+                     (forge-resolve-review-thread))))
+          (should (eq (plist-get req :mutation) 'resolveReviewThread))
+          (should (equal (alist-get 'threadId (plist-get req :args))
+                         "RT_resolve"))
+          (should (eq (oref (closql-get (forge-db) "rc-1"
+                                        'forge-pullreq-review-comment)
+                            resolved-p)
+                      t)))))))
+
+(ert-deftest forge-review-write-unresolve-at-point-calls-api-and-updates-db ()
+  "`forge-unresolve-review-thread' dispatches via section, fires the mutation,
+and sets resolved-p nil in the DB."
+  (forge-test--with-db
+    (let* ((repo   (forge-test--make-repo))
+           (pr     (forge-test--make-pullreq repo))
+           (opener (forge-test--make-review-comment pr
+                     :discussion-id "RT_unresolve" :resolved-p t)))
+      (closql-insert (forge-db) opener t)
+      (forge-test--with-section-at-rc opener
+        (let ((req (forge-test--capture-request
+                     (forge-unresolve-review-thread))))
+          (should (eq (plist-get req :mutation) 'unresolveReviewThread))
+          (should (equal (alist-get 'threadId (plist-get req :args))
+                         "RT_unresolve"))
+          (should (null (oref (closql-get (forge-db) "rc-1"
+                                          'forge-pullreq-review-comment)
+                              resolved-p))))))))
 
 (ert-deftest forge-review-write-submit-add-review-comment-stages-pending ()
   "`forge--submit-add-review-comment' inserts a pending row with the correct slots."
