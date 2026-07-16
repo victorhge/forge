@@ -576,97 +576,79 @@ GitLab needs to locate the diff position.  Returns the discussion alist."
       (setq attempts (1+ attempts)))
     mr))
 
-(defun forge-itest--gl-run-with-mr (owner name title test-fn)
-  "Set up a throwaway MR, call TEST-FN with (repo-obj pr-obj mr-alist mr-iid path),
-then close the MR and delete the branch regardless of errors."
-  (let* ((project-id (forge-itest--gl-project-id owner name))
-         (default-br (forge-itest--gl-default-branch owner name))
-         (branch     (format "forge-itest-%s" (format-time-string "%Y%m%d%H%M%S")))
-         (path       "forge-itest-scratch.txt")
-         (base-sha   (forge-itest--gl-branch-sha owner name default-br))
-         (mr-iid     nil))
-    (forge-itest--with-db
-      (unwind-protect
-          (progn
-            (forge-itest--gl-create-branch project-id branch base-sha)
-            (forge-itest--gl-push-file
-             project-id branch path
-             "line1\nline2\nline3\n"
-             (format "forge-itest: %s" title))
-            (let* ((mr-alist   (forge-itest--gl-create-mr
-                                project-id title branch default-br))
-                   (_          (setq mr-iid (alist-get 'iid mr-alist)))
-                   (mr-alist   (forge-itest--gl-mr-with-diff-refs project-id mr-iid))
-                   (repo-obj   (forge-itest--make-gitlab-repo-object
-                                owner name project-id))
-                   (pr-obj     (forge-itest--make-gitlab-pullreq-object
-                                repo-obj mr-alist)))
-              (funcall test-fn repo-obj pr-obj mr-alist mr-iid path)))
-        (when mr-iid
-          (ignore-errors (forge-itest--gl-close-mr project-id mr-iid)))
-        (ignore-errors (forge-itest--gl-delete-branch project-id branch))))))
+(defmacro forge-itest--with-fixture-mr (owner name &rest body)
+  "Run BODY with bindings for the persistent GitLab fixture MR.
+Binds REPO-OBJ, PR-OBJ, MR-ALIST, MR-IID, PATH, and POSTED-IDS.
+Deletes all note IDs accumulated in POSTED-IDS on exit."
+  (declare (indent 2))
+  `(let* ((fixture    (forge-itest--ensure-mr ,owner ,name))
+          (mr-iid     (plist-get fixture :iid))
+          (mr-alist   (plist-get fixture :mr-alist))
+          (path       (plist-get fixture :path))
+          (project-id (forge-itest--gl-project-id ,owner ,name))
+          (posted-ids nil))
+     (forge-itest--with-db
+       (unwind-protect
+           (let* ((repo-obj (forge-itest--make-gitlab-repo-object
+                             ,owner ,name project-id))
+                  (pr-obj   (forge-itest--make-gitlab-pullreq-object
+                             repo-obj mr-alist)))
+             ,@body)
+         (dolist (id posted-ids)
+           (forge-itest--gl-delete-note project-id mr-iid id))))))
 
 (ert-deftest forge-itest-gitlab-fetch-review-threads ()
   "GitLab: fetch via REST — opener+reply structure is correct in the DB."
   (pcase (forge-itest--gitlab-repo)
     ('nil (skip-unless nil))
     (`(,owner ,name)
-     (forge-itest--gl-run-with-mr
-      owner name "forge-itest review comment test"
-      (lambda (repo-obj pr-obj mr-alist mr-iid path)
-        (let* ((disc    (forge-itest--gl-add-review-comment
-                         (forge-itest--gl-project-id owner name)
-                         mr-iid mr-alist path 1
-                         "forge-itest opener comment"))
-               (disc-id (alist-get 'id disc)))
-          (forge-itest--gl-reply-to-discussion
-           (forge-itest--gl-project-id owner name)
-           mr-iid disc-id "forge-itest reply comment")
-          (let* ((discussions (forge-itest--gl-discussions
-                               (forge-itest--gl-project-id owner name) mr-iid))
-                 (inline      (seq-filter
-                               (lambda (d)
-                                 (seq-some (lambda (n) (alist-get 'position n))
-                                           (alist-get 'notes d)))
-                               discussions))
-                 (_           (forge--update-pullreq-review-comments
-                               repo-obj pr-obj inline))
-                 (rows        (oref pr-obj review-comments))
-                 (openers     (seq-filter (lambda (c) (null (oref c reply-to))) rows))
-                 (replies     (seq-filter (lambda (c) (oref c reply-to)) rows)))
-            (should (= (length rows) 2))
-            (should (= (length openers) 1))
-            (should (= (length replies) 1))
-            (should (equal (oref (car openers) body) "forge-itest opener comment"))
-            (should (equal (oref (car replies) body) "forge-itest reply comment"))
-            (should (equal (oref (car replies) reply-to)
-                           (oref (car openers) discussion-id))))))))))
+     (forge-itest--with-fixture-mr owner name
+       (let* ((disc    (forge-itest--gl-add-review-comment
+                        project-id mr-iid mr-alist path 1
+                        "forge-itest opener comment"))
+              (disc-id (alist-get 'id disc)))
+         (forge-itest--gl-reply-to-discussion
+          project-id mr-iid disc-id "forge-itest reply comment")
+         (let* ((discussions (forge-itest--gl-discussions project-id mr-iid))
+                (inline      (seq-filter
+                              (lambda (d)
+                                (seq-some (lambda (n) (alist-get 'position n))
+                                          (alist-get 'notes d)))
+                              discussions))
+                (_           (forge--update-pullreq-review-comments
+                              repo-obj pr-obj inline))
+                (rows        (oref pr-obj review-comments))
+                (openers     (seq-filter (lambda (c) (null (oref c reply-to))) rows))
+                (replies     (seq-filter (lambda (c) (oref c reply-to)) rows)))
+           (should (= (length rows) 2))
+           (should (= (length openers) 1))
+           (should (= (length replies) 1))
+           (should (equal (oref (car openers) body) "forge-itest opener comment"))
+           (should (equal (oref (car replies) body) "forge-itest reply comment"))
+           (should (equal (oref (car replies) reply-to)
+                          (oref (car openers) discussion-id)))))))))
 
 (ert-deftest forge-itest-gitlab-review-comment-path-and-line ()
   "GitLab: fetch via REST — DB row records correct file path and line number."
   (pcase (forge-itest--gitlab-repo)
     ('nil (skip-unless nil))
     (`(,owner ,name)
-     (forge-itest--gl-run-with-mr
-      owner name "forge-itest path+line test"
-      (lambda (repo-obj pr-obj mr-alist mr-iid path)
-        (forge-itest--gl-add-review-comment
-         (forge-itest--gl-project-id owner name)
-         mr-iid mr-alist path 2 "forge-itest line-2 comment")
-        (let* ((discussions (forge-itest--gl-discussions
-                             (forge-itest--gl-project-id owner name) mr-iid))
-               (inline      (seq-filter
-                             (lambda (d)
-                               (seq-some (lambda (n) (alist-get 'position n))
-                                         (alist-get 'notes d)))
-                             discussions))
-               (_           (forge--update-pullreq-review-comments
-                             repo-obj pr-obj inline))
-               (rows        (oref pr-obj review-comments))
-               (opener      (seq-find (lambda (c) (null (oref c reply-to))) rows)))
-          (should opener)
-          (should (equal (oref opener new-path) path))
-          (should (= (oref opener new-line) 2))))))))
+     (forge-itest--with-fixture-mr owner name
+       (forge-itest--gl-add-review-comment
+        project-id mr-iid mr-alist path 2 "forge-itest line-2 comment")
+       (let* ((discussions (forge-itest--gl-discussions project-id mr-iid))
+              (inline      (seq-filter
+                            (lambda (d)
+                              (seq-some (lambda (n) (alist-get 'position n))
+                                        (alist-get 'notes d)))
+                            discussions))
+              (_           (forge--update-pullreq-review-comments
+                            repo-obj pr-obj inline))
+              (rows        (oref pr-obj review-comments))
+              (opener      (seq-find (lambda (c) (null (oref c reply-to))) rows)))
+         (should opener)
+         (should (equal (oref opener new-path) path))
+         (should (= (oref opener new-line) 2)))))))
 
 ;;; _
 (provide 'forge-review-integration-test)
