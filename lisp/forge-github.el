@@ -1419,7 +1419,7 @@
         (data     (list (cons 'event "COMMENT")
                         (cons 'body  ""))))
     (when comments
-      (push (cons 'comments comments) data))
+      (push (cons 'comments (vconcat comments)) data))
     (forge--rest pr "POST"
       "/repos/:owner/:repo/pulls/:number/reviews"
       data)
@@ -1429,8 +1429,8 @@
   "POST a reply to OPENER's thread on GitHub."
   (forge--rest pr "POST"
     "/repos/:owner/:repo/pulls/:number/comments"
-    (list (cons 'body           text)
-          (cons 'in_reply_to_id (oref opener database-id)))))
+    (list (cons 'body         text)
+          (cons 'in_reply_to  (oref opener database-id)))))
 
 (cl-defmethod forge--review-set-thread-resolved
   ((_repo forge-github-repository) pr opener resolved)
@@ -1450,10 +1450,11 @@
   "POST a single immediate inline comment at PATH SIDE LINE on GitHub."
   (forge--rest pr "POST"
     "/repos/:owner/:repo/pulls/:number/comments"
-    (list (cons 'body body)
-          (cons 'path path)
-          (cons 'line line)
-          (cons 'side (if (eq side 'old) "LEFT" "RIGHT")))))
+    (list (cons 'body      body)
+          (cons 'commit_id (oref pr head-rev))
+          (cons 'path      path)
+          (cons 'line      line)
+          (cons 'side      (if (eq side 'old) "LEFT" "RIGHT")))))
 
 ;;; _
 ;; Local Variables:

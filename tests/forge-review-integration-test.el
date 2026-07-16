@@ -726,7 +726,7 @@ GitLab needs to locate the diff position.  Returns the discussion alist."
                 :forge    "gitlab.com"
                 :owner    owner
                 :name     name
-                :apihost  "gitlab.com"
+                :apihost  "gitlab.com/api/v4"
                 :githost  "gitlab.com")))
     (oset repo condition :tracked)
     (closql-insert (forge-db) repo t)
@@ -997,6 +997,7 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
                     :new-path     path
                     :old-path     path
                     :new-line     1
+                    :old-line     nil
                     :body         "forge-itest gl-submit-review A"
                     :pending-p    t))
               (rc2 (forge-pullreq-review-comment
@@ -1008,6 +1009,7 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
                     :new-path     path
                     :old-path     path
                     :new-line     2
+                    :old-line     nil
                     :body         "forge-itest gl-submit-review B"
                     :pending-p    t))
               (_   (closql-insert (forge-db) rc1 t))
