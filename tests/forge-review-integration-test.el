@@ -469,6 +469,30 @@ fixture MR in OWNER/NAME.  Creates the branch and/or MR if absent."
           :mr-alist mr-alist
           :path     forge-itest--fixture-file)))
 
+;;; Comment tracking
+
+(defmacro forge-itest--record (posted-ids-var comment-alist-form)
+  "Evaluate COMMENT-ALIST-FORM, push its `id' onto POSTED-IDS-VAR, return it."
+  (let ((result (gensym "comment")))
+    `(let ((,result ,comment-alist-form))
+       (push (alist-get 'id ,result) ,posted-ids-var)
+       ,result)))
+
+(defun forge-itest--delete-review-comment (owner name id)
+  "Delete GitHub pull review comment ID from OWNER/NAME."
+  (condition-case nil
+      (forge-itest--gh "DELETE"
+                       (format "/repos/%s/%s/pulls/comments/%s" owner name id))
+    (error nil)))
+
+(defun forge-itest--gl-delete-note (project-id mr-iid note-id)
+  "Delete GitLab note NOTE-ID from MR-IID in PROJECT-ID."
+  (condition-case nil
+      (forge-itest--gl "DELETE"
+                       (format "/projects/%s/merge_requests/%s/notes/%s"
+                               project-id mr-iid note-id))
+    (error nil)))
+
 (defun forge-itest--gl-line-code (path new-line)
   "Return the GitLab line_code for PATH at NEW-LINE (added line, no old side).
 Format: SHA1(\"{path}\")_{old_line}_{new_line}, old_line=0 for pure additions."
