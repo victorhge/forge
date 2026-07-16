@@ -603,12 +603,15 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
     ('nil (skip-unless nil))
     (`(,owner ,name)
      (forge-itest--with-fixture-mr owner name
-       (let* ((disc    (forge-itest--gl-add-review-comment
-                        project-id mr-iid mr-alist path 1
-                        "forge-itest opener comment"))
-              (disc-id (alist-get 'id disc)))
-         (forge-itest--gl-reply-to-discussion
-          project-id mr-iid disc-id "forge-itest reply comment")
+       (let* ((disc     (forge-itest--gl-add-review-comment
+                         project-id mr-iid mr-alist path 1
+                         "forge-itest opener comment"))
+              (disc-id  (alist-get 'id disc))
+              (_        (push (alist-get 'id (car (alist-get 'notes disc)))
+                              posted-ids))
+              (reply    (forge-itest--gl-reply-to-discussion
+                         project-id mr-iid disc-id "forge-itest reply comment"))
+              (_        (push (alist-get 'id reply) posted-ids)))
          (let* ((discussions (forge-itest--gl-discussions project-id mr-iid))
                 (inline      (seq-filter
                               (lambda (d)
@@ -634,9 +637,12 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
     ('nil (skip-unless nil))
     (`(,owner ,name)
      (forge-itest--with-fixture-mr owner name
-       (forge-itest--gl-add-review-comment
-        project-id mr-iid mr-alist path 2 "forge-itest line-2 comment")
-       (let* ((discussions (forge-itest--gl-discussions project-id mr-iid))
+       (let* ((disc        (forge-itest--gl-add-review-comment
+                            project-id mr-iid mr-alist path 2
+                            "forge-itest line-2 comment"))
+              (_           (push (alist-get 'id (car (alist-get 'notes disc)))
+                                 posted-ids))
+              (discussions (forge-itest--gl-discussions project-id mr-iid))
               (inline      (seq-filter
                             (lambda (d)
                               (seq-some (lambda (n) (alist-get 'position n))
