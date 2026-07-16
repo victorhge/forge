@@ -220,13 +220,15 @@ fixture PR in OWNER/NAME.  Creates the branch and/or PR if absent."
       (forge-itest--delete-review-comment owner name (alist-get 'id c)))))
 
 (defun forge-itest--gl-clear-mr-comments (project-id mr-iid)
-  "Delete all inline discussion notes on MR-IID in PROJECT-ID."
+  "Delete all inline discussion notes on MR-IID in PROJECT-ID.
+Deletes replies before the opener so GitLab permits opener deletion."
   (let ((discussions (forge-itest--gl-discussions project-id mr-iid)))
     (dolist (disc discussions)
-      (dolist (note (alist-get 'notes disc))
-        (when (alist-get 'position note)
-          (forge-itest--gl-delete-note
-           project-id mr-iid (alist-get 'id note)))))))
+      (let ((notes (alist-get 'notes disc)))
+        (when (seq-some (lambda (n) (alist-get 'position n)) notes)
+          (dolist (note (reverse notes))
+            (forge-itest--gl-delete-note
+             project-id mr-iid (alist-get 'id note))))))))
 
 ;;; Comment tracking
 
