@@ -24,12 +24,14 @@
 ;;   FORGE_TEST_GITHUB_REPO  — "owner/repo" on github.com
 ;;   FORGE_TEST_GITLAB_REPO  — "owner/repo" on gitlab.com
 ;;
-;; Each test suite creates a throwaway branch + MR/PR, adds review
-;; threads, runs assertions, then deletes everything in unwind-protect.
-;; No stable pre-existing PR/MR is required.
+;; Each test suite reuses a persistent branch `forge-itest-fixture` and a
+;; single open PR/MR titled "forge-itest fixture (persistent)".  On first
+;; run (or after accidental deletion) the branch and PR/MR are created
+;; automatically.  Tests only create and delete review comments — no
+;; branch or PR/MR churn per run.
 ;;
 ;; Run with:
-;;   scripts/run-integration-tests.sh owner/repo
+;;   scripts/run-integration-tests.sh [--github owner/repo] [--gitlab owner/repo]
 
 ;;; Code:
 
