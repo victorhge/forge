@@ -211,13 +211,15 @@ fixture PR in OWNER/NAME.  Creates the branch and/or PR if absent."
                    `((body        . ,body)
                      (in_reply_to . ,comment-id))))
 
+(defun forge-itest--gh-pr-comments (owner name pr-number)
+  "Return the list of review comments on PR-NUMBER in OWNER/NAME."
+  (forge-itest--gh "GET"
+    (format "/repos/%s/%s/pulls/%s/comments" owner name pr-number)))
+
 (defun forge-itest--clear-pr-comments (owner name pr-number)
   "Delete all review comments on PR-NUMBER in OWNER/NAME."
-  (let ((comments (forge-itest--gh
-                   "GET"
-                   (format "/repos/%s/%s/pulls/%s/comments" owner name pr-number))))
-    (dolist (c comments)
-      (forge-itest--delete-review-comment owner name (alist-get 'id c)))))
+  (dolist (c (forge-itest--gh-pr-comments owner name pr-number))
+    (forge-itest--delete-review-comment owner name (alist-get 'id c))))
 
 (defun forge-itest--gl-clear-mr-comments (project-id mr-iid)
   "Delete all inline discussion notes on MR-IID in PROJECT-ID.
@@ -402,6 +404,163 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
          (should opener)
          (should (stringp (oref opener diff-hunk)))
          (should (not (string-empty-p (oref opener diff-hunk)))))))))
+
+(ert-deftest forge-itest-github-post-reply ()
+  "GitHub: forge--review-post-reply posts a reply visible via re-fetch."
+  (pcase (forge-itest--github-repo)
+    ('nil (skip-unless nil))
+    (`(,owner ,name)
+     (forge-itest--with-fixture-pr owner name
+       (let* ((opener-alist (forge-itest--record posted-ids
+                              (forge-itest--add-review-comment
+                               owner name pr-number commit-sha path 1
+                               "forge-itest post-reply opener")))
+              (opener-db-id  (alist-get 'id opener-alist))
+              (opener-rc     (forge-pullreq-review-comment
+                              :id           (forge--object-id (oref pr-obj id)
+                                                              (number-to-string opener-db-id))
+                              :their-id     (number-to-string opener-db-id)
+                              :discussion-id "placeholder"
+                              :database-id  opener-db-id
+                              :pullreq      (oref pr-obj id)
+                              :new-path     path
+                              :new-line     1
+                              :body         "forge-itest post-reply opener"
+                              :pending-p    nil))
+              (_             (closql-insert (forge-db) opener-rc t))
+              (_             (forge--review-post-reply repo-obj pr-obj opener-rc
+                                                       "forge-itest post-reply body"))
+              (comments      (forge-itest--gh-pr-comments owner name pr-number))
+              (reply         (seq-find (lambda (c)
+                                         (equal (alist-get 'in_reply_to_id c) opener-db-id))
+                                       comments)))
+         (should reply)
+         (should (equal (alist-get 'body reply) "forge-itest post-reply body"))
+         (push (alist-get 'id reply) posted-ids))))))
+
+(ert-deftest forge-itest-github-delete-comment ()
+  "GitHub: forge--review-delete-comment removes the comment from the API."
+  (pcase (forge-itest--github-repo)
+    ('nil (skip-unless nil))
+    (`(,owner ,name)
+     (forge-itest--with-fixture-pr owner name
+       (let* ((comment-alist (forge-itest--add-review-comment
+                              owner name pr-number commit-sha path 1
+                              "forge-itest delete-comment"))
+              (comment-id    (alist-get 'id comment-alist))
+              (rc            (forge-pullreq-review-comment
+                              :id           (forge--object-id (oref pr-obj id)
+                                                              (number-to-string comment-id))
+                              :their-id     (number-to-string comment-id)
+                              :discussion-id "placeholder"
+                              :database-id  comment-id
+                              :pullreq      (oref pr-obj id)
+                              :new-path     path
+                              :new-line     1
+                              :body         "forge-itest delete-comment"
+                              :pending-p    nil))
+              (_             (closql-insert (forge-db) rc t))
+              (_             (forge--review-delete-comment repo-obj pr-obj rc))
+              (comments      (forge-itest--gh-pr-comments owner name pr-number)))
+         (should-not (seq-find (lambda (c) (= (alist-get 'id c) comment-id))
+                               comments)))))))
+
+(ert-deftest forge-itest-github-post-comment ()
+  "GitHub: forge--review-post-comment posts an inline comment visible via re-fetch."
+  (pcase (forge-itest--github-repo)
+    ('nil (skip-unless nil))
+    (`(,owner ,name)
+     (forge-itest--with-fixture-pr owner name
+       (let* ((result   (forge--review-post-comment
+                         repo-obj pr-obj
+                         "forge-itest post-comment body"
+                         path 'new 3))
+              (new-id   (alist-get 'id result))
+              (_        (push new-id posted-ids))
+              (comments (forge-itest--gh-pr-comments owner name pr-number))
+              (found    (seq-find (lambda (c) (equal (alist-get 'id c) new-id))
+                                  comments)))
+         (should found)
+         (should (equal (alist-get 'body found) "forge-itest post-comment body"))
+         (should (equal (alist-get 'path found) path))
+         (should (= (alist-get 'line found) 3))
+         (should (equal (alist-get 'side found) "RIGHT")))))))
+
+(ert-deftest forge-itest-github-resolve-thread ()
+  "GitHub: forge--review-set-thread-resolved marks the thread resolved via GraphQL."
+  (pcase (forge-itest--github-repo)
+    ('nil (skip-unless nil))
+    (`(,owner ,name)
+     (forge-itest--with-fixture-pr owner name
+       (let* ((comment-alist (forge-itest--record posted-ids
+                               (forge-itest--add-review-comment
+                                owner name pr-number commit-sha path 1
+                                "forge-itest resolve-thread")))
+              (_comment-id   (alist-get 'id comment-alist))
+              ;; Map threads into DB so we get the GraphQL discussion-id.
+              (threads       (forge-itest--graphql-review-threads owner name pr-number))
+              (_             (forge--update-pullreq-review-comments repo-obj pr-obj threads))
+              (opener        (seq-find (lambda (c) (null (oref c reply-to)))
+                                       (oref pr-obj review-comments)))
+              (_             (forge--review-set-thread-resolved repo-obj pr-obj opener t))
+              ;; Re-fetch and verify isResolved.
+              (threads2      (forge-itest--graphql-review-threads owner name pr-number))
+              (thread-nodes  (alist-get 'nodes threads2))
+              (disc-id       (oref opener discussion-id))
+              (found-thread  (seq-find (lambda (t)
+                                         (equal (alist-get 'id t) disc-id))
+                                       thread-nodes)))
+         (should found-thread)
+         (should (eq (alist-get 'isResolved found-thread) t)))))))
+
+(ert-deftest forge-itest-github-submit-review ()
+  "GitHub: forge--review-submit posts all pending comments and clears pending-p."
+  (pcase (forge-itest--github-repo)
+    ('nil (skip-unless nil))
+    (`(,owner ,name)
+     (forge-itest--with-fixture-pr owner name
+       (let* ((rc1 (forge-pullreq-review-comment
+                    :id           (forge--object-id (oref pr-obj id) "pending-1")
+                    :their-id     nil
+                    :discussion-id nil
+                    :database-id  0
+                    :pullreq      (oref pr-obj id)
+                    :new-path     path
+                    :new-line     1
+                    :body         "forge-itest submit-review A"
+                    :pending-p    t))
+              (rc2 (forge-pullreq-review-comment
+                    :id           (forge--object-id (oref pr-obj id) "pending-2")
+                    :their-id     nil
+                    :discussion-id nil
+                    :database-id  0
+                    :pullreq      (oref pr-obj id)
+                    :new-path     path
+                    :new-line     2
+                    :body         "forge-itest submit-review B"
+                    :pending-p    t))
+              (_   (closql-insert (forge-db) rc1 t))
+              (_   (closql-insert (forge-db) rc2 t))
+              (_   (forge--review-submit repo-obj pr-obj))
+              ;; Re-fetch from API to confirm both comments appeared.
+              (comments (forge-itest--gh-pr-comments owner name pr-number))
+              (found-a  (seq-find (lambda (c)
+                                    (equal (alist-get 'body c) "forge-itest submit-review A"))
+                                  comments))
+              (found-b  (seq-find (lambda (c)
+                                    (equal (alist-get 'body c) "forge-itest submit-review B"))
+                                  comments)))
+         (should found-a)
+         (should found-b)
+         (push (alist-get 'id found-a) posted-ids)
+         (push (alist-get 'id found-b) posted-ids)
+         ;; Verify pending-p was cleared in the DB.
+         (should (null (oref (closql-get (forge-db) (oref rc1 id)
+                                         'forge-pullreq-review-comment)
+                             pending-p)))
+         (should (null (oref (closql-get (forge-db) (oref rc2 id)
+                                         'forge-pullreq-review-comment)
+                             pending-p))))))))
 
 ;;; GitLab integration tests
 
