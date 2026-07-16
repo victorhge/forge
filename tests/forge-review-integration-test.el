@@ -505,11 +505,10 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
               (_             (forge--review-set-thread-resolved repo-obj pr-obj opener t))
               ;; Re-fetch and verify isResolved.
               (threads2      (forge-itest--graphql-review-threads owner name pr-number))
-              (thread-nodes  (alist-get 'nodes threads2))
               (disc-id       (oref opener discussion-id))
-              (found-thread  (seq-find (lambda (t)
-                                         (equal (alist-get 'id t) disc-id))
-                                       thread-nodes)))
+              (found-thread  (seq-find (lambda (node)
+                                         (equal (alist-get 'id node) disc-id))
+                                       threads2)))
          (should found-thread)
          (should (eq (alist-get 'isResolved found-thread) t)))))))
 
