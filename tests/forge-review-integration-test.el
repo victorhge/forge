@@ -79,13 +79,20 @@ data directly — the same mapping path forge--update-pullreq uses at runtime."
   (when-let ((repo (getenv "FORGE_TEST_GITHUB_REPO")))
     (split-string repo "/")))
 
+(defun forge-itest--gh-default-branch (owner name)
+  "Return the default branch name for OWNER/NAME on GitHub."
+  (alist-get 'default_branch
+             (forge-itest--gh "GET" (format "/repos/%s/%s" owner name))))
+
 (defun forge-itest--main-sha (owner name)
   "Return the current SHA of HEAD on the default branch."
-  (alist-get 'sha
-             (alist-get 'object
-                        (forge-itest--gh
-                         "GET"
-                         (format "/repos/%s/%s/git/ref/heads/main" owner name)))))
+  (let ((branch (forge-itest--gh-default-branch owner name)))
+    (alist-get 'sha
+               (alist-get 'object
+                          (forge-itest--gh
+                           "GET"
+                           (format "/repos/%s/%s/git/ref/heads/%s"
+                                   owner name branch))))))
 
 (defun forge-itest--create-branch (owner name branch base-sha)
   "Create BRANCH from BASE-SHA in owner/name."
@@ -179,7 +186,7 @@ fixture PR in OWNER/NAME.  Creates the branch and/or PR if absent."
              owner name
              "forge-itest fixture (persistent)"
              forge-itest--fixture-branch
-             "main")))
+             (forge-itest--gh-default-branch owner name))))
     ;; Extract commit SHA from the PR head.
     (let ((commit-sha (alist-get 'sha (alist-get 'head pr-alist)))
           (number     (alist-get 'number pr-alist)))
@@ -462,9 +469,10 @@ fixture MR in OWNER/NAME.  Creates the branch and/or MR if absent."
         (setq mr-alist
               (forge-itest--gl-mr-with-diff-refs
                project-id (alist-get 'iid raw)))))
-    (list :iid      (alist-get 'iid mr-alist)
-          :mr-alist mr-alist
-          :path     forge-itest--fixture-file)))
+    (list :iid        (alist-get 'iid mr-alist)
+          :mr-alist   mr-alist
+          :project-id project-id
+          :path       forge-itest--fixture-file)))
 
 ;;; Comment tracking
 
@@ -587,7 +595,7 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
           (mr-iid     (plist-get fixture :iid))
           (mr-alist   (plist-get fixture :mr-alist))
           (path       (plist-get fixture :path))
-          (project-id (forge-itest--gl-project-id ,owner ,name))
+          (project-id (plist-get fixture :project-id))
           (posted-ids nil))
      (forge-itest--with-db
        (unwind-protect
