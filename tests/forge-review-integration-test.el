@@ -425,6 +425,50 @@ Returns the new commit SHA."
                 project-id (url-hexify-string branch)))
     (error nil)))
 
+(defun forge-itest--ensure-mr (owner name)
+  "Return a plist (:iid N :mr-alist ALIST :path PATH) for the persistent
+fixture MR in OWNER/NAME.  Creates the branch and/or MR if absent."
+  (let* ((project-id  (forge-itest--gl-project-id owner name))
+         (open-mrs    (forge-itest--gl
+                       "GET"
+                       (format "/projects/%s/merge_requests" project-id)
+                       `((state         . "opened")
+                         (source_branch . ,forge-itest--fixture-branch))))
+         (mr-alist    (car open-mrs)))
+    (unless mr-alist
+      ;; Check branch; create if missing.
+      (let ((branch-exists
+             (condition-case nil
+                 (forge-itest--gl
+                  "GET"
+                  (format "/projects/%s/repository/branches/%s"
+                          project-id
+                          (url-hexify-string forge-itest--fixture-branch)))
+               (error nil))))
+        (unless branch-exists
+          (let* ((default-br (forge-itest--gl-default-branch owner name))
+                 (base-sha   (forge-itest--gl-branch-sha owner name default-br)))
+            (forge-itest--gl-create-branch
+             project-id forge-itest--fixture-branch base-sha)
+            (forge-itest--gl-push-file
+             project-id forge-itest--fixture-branch
+             forge-itest--fixture-file
+             forge-itest--fixture-content
+             "forge-itest: add fixture file"))))
+      ;; Open the MR.
+      (let* ((default-br (forge-itest--gl-default-branch owner name))
+             (raw        (forge-itest--gl-create-mr
+                          project-id
+                          "forge-itest fixture (persistent)"
+                          forge-itest--fixture-branch
+                          default-br)))
+        (setq mr-alist
+              (forge-itest--gl-mr-with-diff-refs
+               project-id (alist-get 'iid raw)))))
+    (list :iid      (alist-get 'iid mr-alist)
+          :mr-alist mr-alist
+          :path     forge-itest--fixture-file)))
+
 (defun forge-itest--gl-line-code (path new-line)
   "Return the GitLab line_code for PATH at NEW-LINE (added line, no old side).
 Format: SHA1(\"{path}\")_{old_line}_{new_line}, old_line=0 for pure additions."
