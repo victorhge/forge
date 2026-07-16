@@ -211,6 +211,23 @@ fixture PR in OWNER/NAME.  Creates the branch and/or PR if absent."
                    `((body        . ,body)
                      (in_reply_to . ,comment-id))))
 
+(defun forge-itest--clear-pr-comments (owner name pr-number)
+  "Delete all review comments on PR-NUMBER in OWNER/NAME."
+  (let ((comments (forge-itest--gh
+                   "GET"
+                   (format "/repos/%s/%s/pulls/%s/comments" owner name pr-number))))
+    (dolist (c comments)
+      (forge-itest--delete-review-comment owner name (alist-get 'id c)))))
+
+(defun forge-itest--gl-clear-mr-comments (project-id mr-iid)
+  "Delete all inline discussion notes on MR-IID in PROJECT-ID."
+  (let ((discussions (forge-itest--gl-discussions project-id mr-iid)))
+    (dolist (disc discussions)
+      (dolist (note (alist-get 'notes disc))
+        (when (alist-get 'position note)
+          (forge-itest--gl-delete-note
+           project-id mr-iid (alist-get 'id note)))))))
+
 ;;; Comment tracking
 
 (defmacro forge-itest--record (posted-ids-var comment-alist-form)
@@ -308,7 +325,8 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
           (posted-ids nil))
      (forge-itest--with-db
        (unwind-protect
-           (let* ((pr-alist  (forge-itest--gh
+           (let* ((_        (forge-itest--clear-pr-comments ,owner ,name pr-number))
+                  (pr-alist  (forge-itest--gh
                               "GET"
                               (format "/repos/%s/%s/pulls/%s"
                                       ,owner ,name pr-number)))
@@ -462,7 +480,10 @@ fixture MR in OWNER/NAME.  Creates the branch and/or MR if absent."
                        (format "/projects/%s/merge_requests" project-id)
                        `((state         . "opened")
                          (source_branch . ,forge-itest--fixture-branch))))
-         (mr-alist    (car open-mrs)))
+         (mr-alist    (when (car open-mrs)
+                        ;; List endpoint omits diff_refs; re-fetch via single endpoint.
+                        (forge-itest--gl-mr-with-diff-refs
+                         project-id (alist-get 'iid (car open-mrs))))))
     (unless mr-alist
       ;; Check branch; create if missing.
       (let ((branch-exists
@@ -519,8 +540,8 @@ GitLab needs to locate the diff position.  Returns the discussion alist."
                       (start_sha     . , .diff_refs.start_sha)
                       (head_sha      . , .diff_refs.head_sha)
                       (new_path      . ,path)
-                      (new_line      . ,new-line)
-                      (line_code     . ,(forge-itest--gl-line-code path new-line))))))))
+                      (old_path      . ,path)
+                      (new_line      . ,new-line)))))))
 
 (defun forge-itest--gl-reply-to-discussion (project-id mr-iid disc-id body)
   "Post a reply note to DISC-ID on MR-IID."
@@ -600,7 +621,8 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
           (posted-ids nil))
      (forge-itest--with-db
        (unwind-protect
-           (let* ((repo-obj (forge-itest--make-gitlab-repo-object
+           (let* ((_       (forge-itest--gl-clear-mr-comments project-id mr-iid))
+                  (repo-obj (forge-itest--make-gitlab-repo-object
                              ,owner ,name project-id))
                   (pr-obj   (forge-itest--make-gitlab-pullreq-object
                              repo-obj mr-alist)))
