@@ -135,6 +135,56 @@ Returns the new commit SHA."
                        (format "/repos/%s/%s/git/refs/heads/%s" owner name branch))
     (error nil)))
 
+(defconst forge-itest--fixture-branch "forge-itest-fixture"
+  "Fixed branch name used by the persistent integration test fixture.")
+
+(defconst forge-itest--fixture-file "forge-itest-scratch.txt"
+  "File path used in the persistent fixture branch.")
+
+(defconst forge-itest--fixture-content "line1\nline2\nline3\n"
+  "File content used in the persistent fixture branch.")
+
+(defun forge-itest--ensure-pr (owner name)
+  "Return a plist (:number N :commit-sha SHA :path PATH) for the persistent
+fixture PR in OWNER/NAME.  Creates the branch and/or PR if absent."
+  (let* ((head        (format "%s:%s" owner forge-itest--fixture-branch))
+         (open-prs    (forge-itest--gh
+                       "GET"
+                       (format "/repos/%s/%s/pulls" owner name)
+                       `((state . "open") (head . ,head))))
+         (pr-alist    (car open-prs)))
+    (unless pr-alist
+      ;; Check branch; create if missing.
+      (let ((branch-exists
+             (condition-case nil
+                 (forge-itest--gh
+                  "GET"
+                  (format "/repos/%s/%s/git/ref/heads/%s"
+                          owner name forge-itest--fixture-branch))
+               (error nil))))
+        (unless branch-exists
+          (let ((base-sha (forge-itest--main-sha owner name)))
+            (forge-itest--create-branch
+             owner name forge-itest--fixture-branch base-sha)
+            (forge-itest--push-file
+             owner name forge-itest--fixture-branch
+             forge-itest--fixture-file
+             forge-itest--fixture-content
+             "forge-itest: add fixture file"))))
+      ;; Open the PR.
+      (setq pr-alist
+            (forge-itest--create-pr
+             owner name
+             "forge-itest fixture (persistent)"
+             forge-itest--fixture-branch
+             "main")))
+    ;; Extract commit SHA from the PR head.
+    (let ((commit-sha (alist-get 'sha (alist-get 'head pr-alist)))
+          (number     (alist-get 'number pr-alist)))
+      (list :number     number
+            :commit-sha commit-sha
+            :path       forge-itest--fixture-file))))
+
 (defun forge-itest--add-review-comment (owner name pr-number commit-id path line body)
   "Post a review comment on PR-NUMBER at PATH:LINE and return the response alist."
   (forge-itest--gh "POST"
