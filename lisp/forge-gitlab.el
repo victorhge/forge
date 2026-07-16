@@ -764,14 +764,17 @@
       (forge--rest pr "POST"
         "/projects/:project/merge_requests/:number/discussions"
         (list (cons 'body     (oref rc body))
-              (cons 'position (list (cons 'base_sha  base-sha)
-                                    (cons 'start_sha start-sha)
-                                    (cons 'head_sha  head-sha)
-                                    (cons 'position_type "text")
-                                    (cons 'new_path  (oref rc new-path))
-                                    (cons 'old_path  (or (oref rc old-path) (oref rc new-path)))
-                                    (cons 'new_line  (oref rc new-line))
-                                    (cons 'old_line  (oref rc old-line)))))))))
+              (cons 'position (delq nil
+                                    (list (cons 'base_sha  base-sha)
+                                          (cons 'start_sha start-sha)
+                                          (cons 'head_sha  head-sha)
+                                          (cons 'position_type "text")
+                                          (cons 'new_path  (oref rc new-path))
+                                          (cons 'old_path  (or (oref rc old-path) (oref rc new-path)))
+                                          (and (oref rc new-line)
+                                               (cons 'new_line (oref rc new-line)))
+                                          (and (oref rc old-line)
+                                               (cons 'old_line (oref rc old-line)))))))))))
 
 (cl-defmethod forge--review-post-reply ((_repo forge-gitlab-repository) pr opener text)
   "POST a reply to OPENER's discussion on GitLab."
@@ -799,14 +802,15 @@
   (forge--rest pr "POST"
     "/projects/:project/merge_requests/:number/discussions"
     (list (cons 'body body)
-          (cons 'position (list (cons 'base_sha  (oref pr base-sha))
-                                (cons 'start_sha (oref pr base-rev))
-                                (cons 'head_sha  (oref pr head-rev))
-                                (cons 'position_type "text")
-                                (cons 'new_path  path)
-                                (cons 'old_path  (or path ""))
-                                (cons 'new_line  (when (eq side 'new) line))
-                                (cons 'old_line  (when (eq side 'old) line)))))))
+          (cons 'position (delq nil
+                                (list (cons 'base_sha  (oref pr base-sha))
+                                      (cons 'start_sha (oref pr base-rev))
+                                      (cons 'head_sha  (oref pr head-rev))
+                                      (cons 'position_type "text")
+                                      (cons 'new_path  path)
+                                      (cons 'old_path  (or path ""))
+                                      (and (eq side 'new) (cons 'new_line line))
+                                      (and (eq side 'old) (cons 'old_line line))))))))
 
 ;;; _
 ;; Local Variables:
