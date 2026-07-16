@@ -263,97 +263,92 @@ fixture PR in OWNER/NAME.  Creates the branch and/or PR if absent."
       (closql-insert (forge-db) pr t)
       pr)))
 
+(defmacro forge-itest--with-fixture-pr (owner name &rest body)
+  "Run BODY with bindings for the persistent GitHub fixture PR.
+Binds REPO-OBJ, PR-OBJ, COMMIT-SHA, PR-NUMBER, PATH, and POSTED-IDS.
+Deletes all comment IDs accumulated in POSTED-IDS on exit."
+  (declare (indent 2))
+  `(let* ((fixture    (forge-itest--ensure-pr ,owner ,name))
+          (pr-number  (plist-get fixture :number))
+          (commit-sha (plist-get fixture :commit-sha))
+          (path       (plist-get fixture :path))
+          (posted-ids nil))
+     (forge-itest--with-db
+       (unwind-protect
+           (let* ((pr-alist  (forge-itest--gh
+                              "GET"
+                              (format "/repos/%s/%s/pulls/%s"
+                                      ,owner ,name pr-number)))
+                  (repo-obj  (forge-itest--make-github-repo-object ,owner ,name))
+                  (pr-obj    (forge-itest--make-pullreq-object repo-obj pr-alist)))
+             ,@body)
+         (dolist (id posted-ids)
+           (forge-itest--delete-review-comment ,owner ,name id))))))
 
 ;;; GitHub integration tests
-
-(defun forge-itest--run-with-pr (owner name title test-fn)
-  "Set up a throwaway PR, call TEST-FN with (repo-obj pr-obj commit-sha pr-number path),
-then close the PR and delete the branch regardless of errors."
-  (let* ((branch     (format "forge-itest-%s" (format-time-string "%Y%m%d%H%M%S")))
-         (path       "forge-itest-scratch.txt")
-         (base-sha   (forge-itest--main-sha owner name))
-         (pr-number  nil))
-    (forge-itest--with-db
-      (unwind-protect
-          (progn
-            (forge-itest--create-branch owner name branch base-sha)
-            (let* ((commit-sha (forge-itest--push-file
-                                owner name branch path
-                                "line1\nline2\nline3\n"
-                                (format "forge-itest: %s" title)))
-                   (pr-alist   (forge-itest--create-pr owner name title branch "main"))
-                   (repo-obj   (forge-itest--make-github-repo-object owner name))
-                   (pr-obj     (forge-itest--make-pullreq-object repo-obj pr-alist)))
-              (setq pr-number (alist-get 'number pr-alist))
-              (funcall test-fn repo-obj pr-obj commit-sha pr-number path)))
-        (when pr-number
-          (ignore-errors (forge-itest--close-pr owner name pr-number)))
-        (ignore-errors (forge-itest--delete-branch owner name branch))))))
 
 (ert-deftest forge-itest-github-fetch-review-threads ()
   "Fetch via real GraphQL: opener+reply structure is correct in the DB."
   (pcase (forge-itest--github-repo)
     ('nil (skip-unless nil))
     (`(,owner ,name)
-     (forge-itest--run-with-pr
-      owner name "forge-itest review comment test"
-      (lambda (repo-obj pr-obj commit-sha pr-number path)
-        (let ((opener (forge-itest--add-review-comment
-                       owner name pr-number commit-sha path 1
-                       "forge-itest opener comment")))
-          (forge-itest--reply-to-comment
-           owner name pr-number (alist-get 'id opener)
-           "forge-itest reply comment")
-          (let* ((threads (forge-itest--graphql-review-threads owner name pr-number))
-                 (_       (forge--update-pullreq-review-comments repo-obj pr-obj threads))
-                 (rows    (oref pr-obj review-comments))
-                 (openers (seq-filter (lambda (c) (null (oref c reply-to))) rows))
-                 (replies (seq-filter (lambda (c) (oref c reply-to)) rows)))
-            (should (= (length rows) 2))
-            (should (= (length openers) 1))
-            (should (= (length replies) 1))
-            (should (equal (oref (car openers) body) "forge-itest opener comment"))
-            (should (equal (oref (car replies) body) "forge-itest reply comment"))
-            (should (equal (oref (car replies) reply-to)
-                           (oref (car openers) discussion-id))))))))))
+     (forge-itest--with-fixture-pr owner name
+       (let ((opener (forge-itest--record posted-ids
+                       (forge-itest--add-review-comment
+                        owner name pr-number commit-sha path 1
+                        "forge-itest opener comment"))))
+         (forge-itest--record posted-ids
+           (forge-itest--reply-to-comment
+            owner name pr-number (alist-get 'id opener)
+            "forge-itest reply comment"))
+         (let* ((threads (forge-itest--graphql-review-threads owner name pr-number))
+                (_       (forge--update-pullreq-review-comments repo-obj pr-obj threads))
+                (rows    (oref pr-obj review-comments))
+                (openers (seq-filter (lambda (c) (null (oref c reply-to))) rows))
+                (replies (seq-filter (lambda (c) (oref c reply-to)) rows)))
+           (should (= (length rows) 2))
+           (should (= (length openers) 1))
+           (should (= (length replies) 1))
+           (should (equal (oref (car openers) body) "forge-itest opener comment"))
+           (should (equal (oref (car replies) body) "forge-itest reply comment"))
+           (should (equal (oref (car replies) reply-to)
+                          (oref (car openers) discussion-id)))))))))
 
 (ert-deftest forge-itest-github-review-comment-path-and-line ()
   "Fetch via real GraphQL: DB row records correct file path and line number."
   (pcase (forge-itest--github-repo)
     ('nil (skip-unless nil))
     (`(,owner ,name)
-     (forge-itest--run-with-pr
-      owner name "forge-itest path+line test"
-      (lambda (repo-obj pr-obj commit-sha pr-number path)
-        (forge-itest--add-review-comment
-         owner name pr-number commit-sha path 2
-         "forge-itest line-2 comment")
-        (let* ((threads (forge-itest--graphql-review-threads owner name pr-number))
-               (_       (forge--update-pullreq-review-comments repo-obj pr-obj threads))
-               (rows    (oref pr-obj review-comments))
-               (opener  (seq-find (lambda (c) (null (oref c reply-to))) rows)))
-          (should opener)
-          (should (equal (oref opener new-path) path))
-          (should (= (oref opener new-line) 2))))))))
+     (forge-itest--with-fixture-pr owner name
+       (forge-itest--record posted-ids
+         (forge-itest--add-review-comment
+          owner name pr-number commit-sha path 2
+          "forge-itest line-2 comment"))
+       (let* ((threads (forge-itest--graphql-review-threads owner name pr-number))
+              (_       (forge--update-pullreq-review-comments repo-obj pr-obj threads))
+              (rows    (oref pr-obj review-comments))
+              (opener  (seq-find (lambda (c) (null (oref c reply-to))) rows)))
+         (should opener)
+         (should (equal (oref opener new-path) path))
+         (should (= (oref opener new-line) 2)))))))
 
 (ert-deftest forge-itest-github-diff-hunk-populated ()
   "Fetch via real GraphQL: diff-hunk slot is non-nil for an inline comment."
   (pcase (forge-itest--github-repo)
     ('nil (skip-unless nil))
     (`(,owner ,name)
-     (forge-itest--run-with-pr
-      owner name "forge-itest diff-hunk test"
-      (lambda (repo-obj pr-obj commit-sha pr-number path)
-        (forge-itest--add-review-comment
-         owner name pr-number commit-sha path 1
-         "forge-itest hunk comment")
-        (let* ((threads (forge-itest--graphql-review-threads owner name pr-number))
-               (_       (forge--update-pullreq-review-comments repo-obj pr-obj threads))
-               (rows    (oref pr-obj review-comments))
-               (opener  (seq-find (lambda (c) (null (oref c reply-to))) rows)))
-          (should opener)
-          (should (stringp (oref opener diff-hunk)))
-          (should (not (string-empty-p (oref opener diff-hunk))))))))))
+     (forge-itest--with-fixture-pr owner name
+       (forge-itest--record posted-ids
+         (forge-itest--add-review-comment
+          owner name pr-number commit-sha path 1
+          "forge-itest hunk comment"))
+       (let* ((threads (forge-itest--graphql-review-threads owner name pr-number))
+              (_       (forge--update-pullreq-review-comments repo-obj pr-obj threads))
+              (rows    (oref pr-obj review-comments))
+              (opener  (seq-find (lambda (c) (null (oref c reply-to))) rows)))
+         (should opener)
+         (should (stringp (oref opener diff-hunk)))
+         (should (not (string-empty-p (oref opener diff-hunk)))))))))
 
 ;;; GitLab integration tests
 
