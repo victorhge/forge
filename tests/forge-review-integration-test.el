@@ -849,6 +849,203 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
          (should (equal (oref opener new-path) path))
          (should (= (oref opener new-line) 2)))))))
 
+(ert-deftest forge-itest-gitlab-post-reply ()
+  "GitLab: forge--review-post-reply posts a reply visible via re-fetch."
+  (pcase (forge-itest--gitlab-repo)
+    ('nil (skip-unless nil))
+    (`(,owner ,name)
+     (forge-itest--with-fixture-mr owner name
+       (let* ((disc      (forge-itest--gl-add-review-comment
+                          project-id mr-iid mr-alist path 1
+                          "forge-itest post-reply opener"))
+              (disc-id   (alist-get 'id disc))
+              (note-id   (alist-get 'id (car (alist-get 'notes disc))))
+              (_         (push note-id posted-ids))
+              (opener-rc (forge-pullreq-review-comment
+                          :id           (forge--object-id (oref pr-obj id)
+                                                          (number-to-string note-id))
+                          :their-id     (number-to-string note-id)
+                          :discussion-id disc-id
+                          :database-id  note-id
+                          :pullreq      (oref pr-obj id)
+                          :new-path     path
+                          :new-line     1
+                          :body         "forge-itest post-reply opener"
+                          :pending-p    nil))
+              (_         (closql-insert (forge-db) opener-rc t))
+              (_         (forge--review-post-reply repo-obj pr-obj opener-rc
+                                                   "forge-itest post-reply body"))
+              (discussions (forge-itest--gl-discussions project-id mr-iid))
+              (found-disc  (seq-find (lambda (d) (equal (alist-get 'id d) disc-id))
+                                     discussions))
+              (notes       (alist-get 'notes found-disc))
+              (reply       (seq-find (lambda (n)
+                                       (equal (alist-get 'body n)
+                                              "forge-itest post-reply body"))
+                                     notes)))
+         (should reply)
+         (push (alist-get 'id reply) posted-ids))))))
+
+(ert-deftest forge-itest-gitlab-resolve-thread ()
+  "GitLab: forge--review-set-thread-resolved marks the thread resolved via REST."
+  (pcase (forge-itest--gitlab-repo)
+    ('nil (skip-unless nil))
+    (`(,owner ,name)
+     (forge-itest--with-fixture-mr owner name
+       (let* ((disc      (forge-itest--gl-add-review-comment
+                          project-id mr-iid mr-alist path 1
+                          "forge-itest resolve-thread"))
+              (disc-id   (alist-get 'id disc))
+              (note-id   (alist-get 'id (car (alist-get 'notes disc))))
+              (_         (push note-id posted-ids))
+              (opener-rc (forge-pullreq-review-comment
+                          :id           (forge--object-id (oref pr-obj id)
+                                                          (number-to-string note-id))
+                          :their-id     (number-to-string note-id)
+                          :discussion-id disc-id
+                          :database-id  note-id
+                          :pullreq      (oref pr-obj id)
+                          :new-path     path
+                          :new-line     1
+                          :body         "forge-itest resolve-thread"
+                          :pending-p    nil))
+              (_         (closql-insert (forge-db) opener-rc t))
+              (_         (forge--review-set-thread-resolved repo-obj pr-obj opener-rc t))
+              (discussions (forge-itest--gl-discussions project-id mr-iid))
+              (found-disc  (seq-find (lambda (d) (equal (alist-get 'id d) disc-id))
+                                     discussions)))
+         (should found-disc)
+         (should (eq (alist-get 'resolved found-disc) t)))))))
+
+(ert-deftest forge-itest-gitlab-delete-comment ()
+  "GitLab: forge--review-delete-comment removes the note from the API."
+  (pcase (forge-itest--gitlab-repo)
+    ('nil (skip-unless nil))
+    (`(,owner ,name)
+     (forge-itest--with-fixture-mr owner name
+       (let* ((disc      (forge-itest--gl-add-review-comment
+                          project-id mr-iid mr-alist path 1
+                          "forge-itest delete-comment"))
+              (disc-id   (alist-get 'id disc))
+              (note-id   (alist-get 'id (car (alist-get 'notes disc))))
+              (rc        (forge-pullreq-review-comment
+                          :id           (forge--object-id (oref pr-obj id)
+                                                          (number-to-string note-id))
+                          :their-id     (number-to-string note-id)
+                          :discussion-id disc-id
+                          :database-id  note-id
+                          :pullreq      (oref pr-obj id)
+                          :new-path     path
+                          :new-line     1
+                          :body         "forge-itest delete-comment"
+                          :pending-p    nil))
+              (_         (closql-insert (forge-db) rc t))
+              (_         (forge--review-delete-comment repo-obj pr-obj rc))
+              (discussions (forge-itest--gl-discussions project-id mr-iid))
+              (all-notes   (seq-mapcat (lambda (d) (alist-get 'notes d))
+                                       discussions)))
+         (should-not (seq-find (lambda (n) (= (alist-get 'id n) note-id))
+                               all-notes)))))))
+
+(ert-deftest forge-itest-gitlab-post-comment ()
+  "GitLab: forge--review-post-comment posts an inline comment visible via re-fetch."
+  (pcase (forge-itest--gitlab-repo)
+    ('nil (skip-unless nil))
+    (`(,owner ,name)
+     (forge-itest--with-fixture-mr owner name
+       (let* ((result   (forge--review-post-comment
+                         repo-obj pr-obj
+                         "forge-itest post-comment body"
+                         path 'new 3))
+              (new-note-id (alist-get 'id (car (alist-get 'notes result))))
+              (_           (push new-note-id posted-ids))
+              (discussions (forge-itest--gl-discussions project-id mr-iid))
+              (inline      (seq-filter
+                            (lambda (d)
+                              (seq-some (lambda (n) (alist-get 'position n))
+                                        (alist-get 'notes d)))
+                            discussions))
+              (found-disc  (seq-find
+                            (lambda (d)
+                              (seq-find (lambda (n) (= (alist-get 'id n) new-note-id))
+                                        (alist-get 'notes d)))
+                            inline))
+              (found-note  (when found-disc
+                             (seq-find (lambda (n) (= (alist-get 'id n) new-note-id))
+                                       (alist-get 'notes found-disc)))))
+         (should found-note)
+         (should (equal (alist-get 'body found-note)
+                        "forge-itest post-comment body"))
+         (let ((pos (alist-get 'position found-note)))
+           (should (equal (alist-get 'new_path pos) path))
+           (should (= (alist-get 'new_line pos) 3))))))))
+
+(ert-deftest forge-itest-gitlab-submit-review ()
+  "GitLab: forge--review-submit posts all pending comments as inline discussions."
+  (pcase (forge-itest--gitlab-repo)
+    ('nil (skip-unless nil))
+    (`(,owner ,name)
+     (forge-itest--with-fixture-mr owner name
+       (let* ((rc1 (forge-pullreq-review-comment
+                    :id           (forge--object-id (oref pr-obj id) "gl-pending-1")
+                    :their-id     nil
+                    :discussion-id nil
+                    :database-id  0
+                    :pullreq      (oref pr-obj id)
+                    :new-path     path
+                    :old-path     path
+                    :new-line     1
+                    :body         "forge-itest gl-submit-review A"
+                    :pending-p    t))
+              (rc2 (forge-pullreq-review-comment
+                    :id           (forge--object-id (oref pr-obj id) "gl-pending-2")
+                    :their-id     nil
+                    :discussion-id nil
+                    :database-id  0
+                    :pullreq      (oref pr-obj id)
+                    :new-path     path
+                    :old-path     path
+                    :new-line     2
+                    :body         "forge-itest gl-submit-review B"
+                    :pending-p    t))
+              (_   (closql-insert (forge-db) rc1 t))
+              (_   (closql-insert (forge-db) rc2 t))
+              (_   (forge--review-submit repo-obj pr-obj))
+              ;; Re-fetch from API to confirm both comments appeared.
+              (discussions (forge-itest--gl-discussions project-id mr-iid))
+              (inline      (seq-filter
+                            (lambda (d)
+                              (seq-some (lambda (n) (alist-get 'position n))
+                                        (alist-get 'notes d)))
+                            discussions))
+              (found-a     (seq-find
+                            (lambda (d)
+                              (seq-some (lambda (n)
+                                          (equal (alist-get 'body n)
+                                                 "forge-itest gl-submit-review A"))
+                                        (alist-get 'notes d)))
+                            inline))
+              (found-b     (seq-find
+                            (lambda (d)
+                              (seq-some (lambda (n)
+                                          (equal (alist-get 'body n)
+                                                 "forge-itest gl-submit-review B"))
+                                        (alist-get 'notes d)))
+                            inline)))
+         (should found-a)
+         (should found-b)
+         ;; Track note IDs for teardown.
+         (let ((note-a (seq-find (lambda (n)
+                                   (equal (alist-get 'body n)
+                                          "forge-itest gl-submit-review A"))
+                                 (alist-get 'notes found-a)))
+               (note-b (seq-find (lambda (n)
+                                   (equal (alist-get 'body n)
+                                          "forge-itest gl-submit-review B"))
+                                 (alist-get 'notes found-b))))
+           (push (alist-get 'id note-a) posted-ids)
+           (push (alist-get 'id note-b) posted-ids)))))))
+
 ;;; _
 (provide 'forge-review-integration-test)
 ;;; forge-review-integration-test.el ends here
