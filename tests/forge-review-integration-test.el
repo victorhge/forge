@@ -448,6 +448,7 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
                               owner name pr-number commit-sha path 1
                               "forge-itest delete-comment"))
               (comment-id    (alist-get 'id comment-alist))
+              (_             (push comment-id posted-ids))
               (rc            (forge-pullreq-review-comment
                               :id           (forge--object-id (oref pr-obj id)
                                                               (number-to-string comment-id))
@@ -549,10 +550,10 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
               (found-b  (seq-find (lambda (c)
                                     (equal (alist-get 'body c) "forge-itest submit-review B"))
                                   comments)))
+         (when found-a (push (alist-get 'id found-a) posted-ids))
+         (when found-b (push (alist-get 'id found-b) posted-ids))
          (should found-a)
          (should found-b)
-         (push (alist-get 'id found-a) posted-ids)
-         (push (alist-get 'id found-b) posted-ids)
          ;; Verify pending-p was cleared in the DB.
          (should (null (oref (closql-get (forge-db) (oref rc1 id)
                                          'forge-pullreq-review-comment)
@@ -928,6 +929,7 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
                           "forge-itest delete-comment"))
               (disc-id   (alist-get 'id disc))
               (note-id   (alist-get 'id (car (alist-get 'notes disc))))
+              (_         (push note-id posted-ids))
               (rc        (forge-pullreq-review-comment
                           :id           (forge--object-id (oref pr-obj id)
                                                           (number-to-string note-id))
@@ -1032,19 +1034,15 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
                                                  "forge-itest gl-submit-review B"))
                                         (alist-get 'notes d)))
                             inline)))
+         ;; Push note IDs before asserting so teardown runs even on failure.
+         (dolist (d inline)
+           (when (member (alist-get 'body (car (alist-get 'notes d)))
+                         '("forge-itest gl-submit-review A"
+                           "forge-itest gl-submit-review B"))
+             (push (alist-get 'id (car (alist-get 'notes d)))
+                   posted-ids)))
          (should found-a)
-         (should found-b)
-         ;; Track note IDs for teardown.
-         (let ((note-a (seq-find (lambda (n)
-                                   (equal (alist-get 'body n)
-                                          "forge-itest gl-submit-review A"))
-                                 (alist-get 'notes found-a)))
-               (note-b (seq-find (lambda (n)
-                                   (equal (alist-get 'body n)
-                                          "forge-itest gl-submit-review B"))
-                                 (alist-get 'notes found-b))))
-           (push (alist-get 'id note-a) posted-ids)
-           (push (alist-get 'id note-b) posted-ids)))))))
+         (should found-b))))))
 
 ;;; _
 (provide 'forge-review-integration-test)
