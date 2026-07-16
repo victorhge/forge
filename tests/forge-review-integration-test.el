@@ -211,6 +211,30 @@ fixture PR in OWNER/NAME.  Creates the branch and/or PR if absent."
                    `((body        . ,body)
                      (in_reply_to . ,comment-id))))
 
+;;; Comment tracking
+
+(defmacro forge-itest--record (posted-ids-var comment-alist-form)
+  "Evaluate COMMENT-ALIST-FORM, push its `id' onto POSTED-IDS-VAR, return it."
+  (let ((result (gensym "comment")))
+    `(let ((,result ,comment-alist-form))
+       (push (alist-get 'id ,result) ,posted-ids-var)
+       ,result)))
+
+(defun forge-itest--delete-review-comment (owner name id)
+  "Delete GitHub pull review comment ID from OWNER/NAME."
+  (condition-case nil
+      (forge-itest--gh "DELETE"
+                       (format "/repos/%s/%s/pulls/comments/%s" owner name id))
+    (error nil)))
+
+(defun forge-itest--gl-delete-note (project-id mr-iid note-id)
+  "Delete GitLab note NOTE-ID from MR-IID in PROJECT-ID."
+  (condition-case nil
+      (forge-itest--gl "DELETE"
+                       (format "/projects/%s/merge_requests/%s/notes/%s"
+                               project-id mr-iid note-id))
+    (error nil)))
+
 ;;; DB setup
 
 (defmacro forge-itest--with-db (&rest body)
@@ -474,30 +498,6 @@ fixture MR in OWNER/NAME.  Creates the branch and/or MR if absent."
           :project-id project-id
           :path       forge-itest--fixture-file)))
 
-;;; Comment tracking
-
-(defmacro forge-itest--record (posted-ids-var comment-alist-form)
-  "Evaluate COMMENT-ALIST-FORM, push its `id' onto POSTED-IDS-VAR, return it."
-  (let ((result (gensym "comment")))
-    `(let ((,result ,comment-alist-form))
-       (push (alist-get 'id ,result) ,posted-ids-var)
-       ,result)))
-
-(defun forge-itest--delete-review-comment (owner name id)
-  "Delete GitHub pull review comment ID from OWNER/NAME."
-  (condition-case nil
-      (forge-itest--gh "DELETE"
-                       (format "/repos/%s/%s/pulls/comments/%s" owner name id))
-    (error nil)))
-
-(defun forge-itest--gl-delete-note (project-id mr-iid note-id)
-  "Delete GitLab note NOTE-ID from MR-IID in PROJECT-ID."
-  (condition-case nil
-      (forge-itest--gl "DELETE"
-                       (format "/projects/%s/merge_requests/%s/notes/%s"
-                               project-id mr-iid note-id))
-    (error nil)))
-
 (defun forge-itest--gl-line-code (path new-line)
   "Return the GitLab line_code for PATH at NEW-LINE (added line, no old side).
 Format: SHA1(\"{path}\")_{old_line}_{new_line}, old_line=0 for pure additions."
@@ -519,7 +519,8 @@ GitLab needs to locate the diff position.  Returns the discussion alist."
                       (start_sha     . , .diff_refs.start_sha)
                       (head_sha      . , .diff_refs.head_sha)
                       (new_path      . ,path)
-                      (new_line      . ,new-line)))))))
+                      (new_line      . ,new-line)
+                      (line_code     . ,(forge-itest--gl-line-code path new-line))))))))
 
 (defun forge-itest--gl-reply-to-discussion (project-id mr-iid disc-id body)
   "Post a reply note to DISC-ID on MR-IID."
