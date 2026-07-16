@@ -226,7 +226,7 @@ Deletes replies before the opener so GitLab permits opener deletion."
     (dolist (disc discussions)
       (let ((notes (alist-get 'notes disc)))
         (when (seq-some (lambda (n) (alist-get 'position n)) notes)
-          (dolist (note (reverse notes))
+          (dolist (note (seq-reverse notes))
             (forge-itest--gl-delete-note
              project-id mr-iid (alist-get 'id note))))))))
 
@@ -248,11 +248,11 @@ Deletes replies before the opener so GitLab permits opener deletion."
 
 (defun forge-itest--gl-delete-note (project-id mr-iid note-id)
   "Delete GitLab note NOTE-ID from MR-IID in PROJECT-ID."
-  (condition-case nil
+  (condition-case err
       (forge-itest--gl "DELETE"
                        (format "/projects/%s/merge_requests/%s/notes/%s"
                                project-id mr-iid note-id))
-    (error nil)))
+    (error (message "forge-itest: DELETE note %s failed: %S" note-id err))))
 
 ;;; DB setup
 

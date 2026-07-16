@@ -1433,7 +1433,7 @@
           (cons 'in_reply_to_id (oref opener database-id)))))
 
 (cl-defmethod forge--review-set-thread-resolved
-  ((_repo forge-github-repository) _pr opener resolved)
+  ((_repo forge-github-repository) pr opener resolved)
   "Resolve or unresolve the GitHub review thread at OPENER."
   (forge--query pr
     (ghub--prepare-mutation

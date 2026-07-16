@@ -15,6 +15,7 @@ test:
 	  -f ert-run-tests-batch-and-exit
 
 test-integration:
+	@rm -f tests/forge-review-integration-test.elc
 	@$(EMACS) -Q --batch \
 	  --eval "(require 'package)" \
 	  --eval "(package-initialize)" \
