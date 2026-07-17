@@ -1510,15 +1510,12 @@ signal wrong-number-of-arguments."
            (pr   (forge-test--make-pullreq repo))
            (rc   (forge-test--make-review-comment pr :body "Original")))
       (closql-insert (forge-db) rc t)
-      ;; forge-get-repository is called with rc (forge-pullreq-review-comment),
-      ;; which has no method; stub it to return the test repo.
-      (cl-letf (((symbol-function 'forge-get-repository) (lambda (_obj) repo)))
-        (forge-test--with-post-buffer #'forge-review--save-comment-edit rc
-          (insert "Edited body")
-          (setq-local forge--pre-post-buffer (current-buffer))
-          (should-not (condition-case err
-                          (progn (forge-post-submit) nil)
-                        (wrong-number-of-arguments err)))))
+      (forge-test--with-post-buffer #'forge-review--save-comment-edit rc
+        (insert "Edited body")
+        (setq-local forge--pre-post-buffer (current-buffer))
+        (should-not (condition-case err
+                        (progn (forge-post-submit) nil)
+                      (wrong-number-of-arguments err))))
       (should (equal (oref (closql-get (forge-db) "rc-1"
                                        'forge-pullreq-review-comment)
                            body)
@@ -1533,17 +1530,13 @@ signal wrong-number-of-arguments."
            (opener (forge-test--make-review-comment pr
                      :id "rc-opener" :number 999 :discussion-id "t1")))
       (closql-insert (forge-db) opener t)
-      ;; forge-get-repository is called with opener (forge-pullreq-review-comment),
-      ;; which has no method; stub it to return the test repo.
       (let ((req (forge-test--capture-request
-                   (cl-letf (((symbol-function 'forge-get-repository)
-                              (lambda (_obj) repo)))
-                     (forge-test--with-post-buffer #'forge--submit-add-review-reply opener
-                       (insert "Reply via forge-post-submit")
-                       (setq-local forge--pre-post-buffer (current-buffer))
-                       (should-not (condition-case err
-                                       (progn (forge-post-submit) nil)
-                                     (wrong-number-of-arguments err))))))))
+                   (forge-test--with-post-buffer #'forge--submit-add-review-reply opener
+                     (insert "Reply via forge-post-submit")
+                     (setq-local forge--pre-post-buffer (current-buffer))
+                     (should-not (condition-case err
+                                     (progn (forge-post-submit) nil)
+                                   (wrong-number-of-arguments err)))))))
         (should (string-match-p "pulls/42/comments" (plist-get req :resource)))
         (should (equal (alist-get 'body (plist-get req :data))
                        "Reply via forge-post-submit"))))))
