@@ -480,10 +480,16 @@
     (pullreq-review-comment
      [(class :not-null)
       (id :not-null :primary-key)
+      pullreq
+      number
+      author
+      created
+      updated
+      body
+      (edits :default eieio-unbound)
+      (reactions :default eieio-unbound)
       their-id
       discussion-id
-      number
-      pullreq
       new-path
       old-path
       new-line
@@ -493,11 +499,6 @@
       resolved-p
       reply-to
       review-state
-      author
-      body
-      created
-      updated
-      (reactions :default eieio-unbound)
       pending-p]
      (:foreign-key
       [pullreq] :references pullreq [id]

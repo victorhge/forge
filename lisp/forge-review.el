@@ -31,17 +31,12 @@
 
 ;;; Class
 
-(defclass forge-pullreq-review-comment (forge-object)
+(defclass forge-pullreq-review-comment (forge-pullreq-post)
   ((closql-table         :initform 'pullreq-review-comment)
-   (closql-primary-key   :initform 'id)
    (closql-order-by      :initform [(asc created)])
-   (closql-foreign-key   :initform 'pullreq)
    (closql-class-prefix  :initform "forge-pullreq-review-")
-   (id            :initarg :id)
    (their-id      :initarg :their-id)
    (discussion-id :initarg :discussion-id)
-   (number        :initarg :number)
-   (pullreq       :initarg :pullreq)
    (new-path      :initarg :new-path)
    (old-path      :initarg :old-path)
    (new-line      :initarg :new-line)
@@ -51,23 +46,7 @@
    (resolved-p    :initarg :resolved-p)
    (reply-to      :initarg :reply-to)
    (review-state  :initarg :review-state)
-   (author        :initarg :author)
-   (body          :initarg :body)
-   (created       :initarg :created)
-   (updated       :initarg :updated)
-   (reactions     :initarg :reactions)
    (pending-p     :initarg :pending-p)))
-
-;;; Query
-
-(cl-defmethod forge-get-parent ((rc forge-pullreq-review-comment))
-  (closql-get (forge-db) (oref rc pullreq) 'forge-pullreq))
-
-(cl-defmethod forge-get-repository ((rc forge-pullreq-review-comment))
-  (forge-get-repository (forge-get-parent rc)))
-
-(cl-defmethod forge--format ((rc forge-pullreq-review-comment) slot &optional spec)
-  (forge--format (forge-get-parent rc) slot spec))
 
 ;;; Fetch / Mapping – generics (methods live in forge-github.el / forge-gitlab.el)
 

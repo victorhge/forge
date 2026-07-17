@@ -123,8 +123,8 @@
    (created              :initarg :created)
    (updated              :initarg :updated)
    (body                 :initarg :body)
-   (edits)
-   (reactions)
+   (edits                :initarg :edits)
+   (reactions            :initarg :reactions)
    ))
 
 ;;; Query
