@@ -482,7 +482,7 @@
       (id :not-null :primary-key)
       their-id
       discussion-id
-      database-id
+      number
       pullreq
       new-path
       old-path

@@ -40,7 +40,7 @@
    (id            :initarg :id)
    (their-id      :initarg :their-id)
    (discussion-id :initarg :discussion-id)
-   (database-id   :initarg :database-id)
+   (number        :initarg :number)
    (pullreq       :initarg :pullreq)
    (new-path      :initarg :new-path)
    (old-path      :initarg :old-path)
@@ -57,20 +57,6 @@
    (updated       :initarg :updated)
    (reactions     :initarg :reactions)
    (pending-p     :initarg :pending-p)))
-
-;;; DB Helpers
-
-(defun forge--db-create-review-comment-table (db)
-  "Create the pullreq-review-comment table and add pullreq columns if needed.
-Safe to call on an existing database; no-ops if already present."
-  (ignore-errors
-    (emacsql db [:create-table pullreq-review-comment $S1]
-             (cdr (assq 'pullreq-review-comment forge--db-table-schemata))))
-  (ignore-errors
-    (emacsql db [:alter-table pullreq :add-column base-sha :default nil]))
-  (ignore-errors
-    (emacsql db [:alter-table pullreq :add-column review-comments
-                 :default 'eieio-unbound])))
 
 ;;; Fetch / Mapping – generics (methods live in forge-github.el / forge-gitlab.el)
 
@@ -408,7 +394,7 @@ Clears any existing overlays first, then places fresh ones."
                    :id           (forge--object-id (oref pr id) (format "pending-%s" (float-time)))
                    :their-id     nil
                    :discussion-id nil
-                   :database-id  0
+                   :number       0
                    :pullreq      (oref pr id)
                    :new-path     (and result (not (eq (car result) 'old)) path)
                    :new-line     (cond (context-p (alist-get 'new result))
