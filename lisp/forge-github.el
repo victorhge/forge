@@ -1032,10 +1032,15 @@
 (defun forge--github-pending-review-comments (topic)
   "Return pending review-comment rows for TOPIC as a GitHub `comments' alist."
   (mapcar (lambda (rc)
-            (list (cons 'path (oref rc new-path))
-                  (cons 'line (oref rc new-line))
-                  (cons 'side "RIGHT")
-                  (cons 'body (oref rc body))))
+            (let* ((left-p (and (oref rc old-line) (null (oref rc new-line))))
+                   (path   (if left-p (or (oref rc old-path) (oref rc new-path))
+                             (oref rc new-path)))
+                   (line   (if left-p (oref rc old-line) (oref rc new-line)))
+                   (side   (if left-p "LEFT" "RIGHT")))
+              (list (cons 'path path)
+                    (cons 'line line)
+                    (cons 'side side)
+                    (cons 'body (oref rc body)))))
           (seq-filter (lambda (rc) (oref rc pending-p))
                       (oref topic review-comments))))
 
@@ -1400,7 +1405,7 @@
                     :old-line     (when left-side line)
                     :diff-hunk    .diffHunk
                     :outdated-p   outdated
-                    :resolved-p   (unless is-opener nil)
+                    :resolved-p   (when is-opener resolved)
                     :reply-to     reply-to
                     :review-state state2
                     :author       .author.login

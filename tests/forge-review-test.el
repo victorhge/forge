@@ -99,7 +99,7 @@ hitting the network.  Use `forge-test--make-repo' to create instances.")
   (forge-test--record-rest
    "POST"
    (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/comments")
-   (list (cons 'body text) (cons 'in_reply_to_id (oref opener database-id)))))
+   (list (cons 'body text) (cons 'in_reply_to (oref opener database-id)))))
 
 ;; Note: forge--submit-review-reply and forge--submit-add-single-review-comment
 ;; are NOT stubbed here.  They inherit the forge-github-repository cl-defmethod
@@ -952,7 +952,7 @@ Regression: the predicate previously required ch=?+ so context lines were never 
          calls)))))
 
 (ert-deftest forge-review-write-github-reply-uses-in-reply-to ()
-  "Replying to a GitHub comment sends in_reply_to_id = database-id."
+  "Replying to a GitHub comment sends in_reply_to = database-id."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
@@ -962,7 +962,7 @@ Regression: the predicate previously required ch=?+ so context lines were never 
       (let ((req (forge-test--capture-request
                    (forge--review-post-reply repo pr opener "Reply text"))))
         (should (string-match-p "pulls/42/comments" (plist-get req :resource)))
-        (should (= (alist-get 'in_reply_to_id (plist-get req :data)) 999))))))
+        (should (= (alist-get 'in_reply_to (plist-get req :data)) 999))))))
 
 (ert-deftest forge-review-write-gitlab-reply-uses-discussion-endpoint ()
   "Replying to a GitLab comment posts to the discussion notes sub-endpoint."
@@ -1373,7 +1373,7 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
                      (setq-local forge--pre-post-buffer (current-buffer))
                      (forge-test--invoke-submit-fn #'forge--submit-review-reply repo opener)))))
         (should (string-match-p "pulls/42/comments" (plist-get req :resource)))
-        (should (= (alist-get 'in_reply_to_id (plist-get req :data)) 999))
+        (should (= (alist-get 'in_reply_to (plist-get req :data)) 999))
         (should (equal (alist-get 'body (plist-get req :data)) "Reply body"))))))
 
 (ert-deftest forge-review-write-github-pending-comments-shape ()
