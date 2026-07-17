@@ -13,7 +13,7 @@ make clean       # Remove compiled .elc files and generated autoloads
 
 Compilation requires dependencies on the load path. `default.mk` expects sibling directories (e.g., `../../magit/lisp`, `../../ghub/lisp`) relative to the `lisp/` directory, or set `LOAD_PATH` manually.
 
-`make test` runs the ERT suite in `tests/forge-review-test.el` (87 tests). It uses `package-initialize` to load dependencies from the user's installed ELPA — no path configuration needed. Requires `compat-31.x` (not `compat-30.x`) to satisfy `closql`'s `compat-call sort` usage.
+`make test` runs the ERT suite in `tests/forge-review-test.el` (90 tests). It uses `package-initialize` to load dependencies from the user's installed ELPA — no path configuration needed. Requires `compat-31.x` (not `compat-30.x`) to satisfy `closql`'s `compat-call sort` usage.
 
 ## Architecture
 
@@ -98,7 +98,7 @@ Every source file uses `cond-let` read-symbol-shorthands declared in file-local 
 
 - **DB column order**: `base-sha` and `review-comments` were added to `forge-pullreq` via `ALTER TABLE` and must remain at the **end** of the slot list in `forge-pullreq.el` to match closql's positional INSERT.
 - **Thread openers vs replies**: `reply-to nil` marks a thread opener; `reply-to = discussion-id` marks a reply. All write operations (resolve, reply, delete) dispatch on the opener's `discussion-id`.
-- **API calls in write methods**: backend `cl-defmethod` implementations call `forge--rest` and `forge--query` directly. Tests stub these at the CLOS dispatch layer using fake subclasses (`forge-test-github-repository`, `forge-test-gitlab-repository`) defined in `forge-review-test.el` whose write methods record calls instead of hitting the network.
+- **API calls in write methods**: backend `cl-defmethod` implementations call `forge--rest` and `forge--query` directly. Tests use fake subclasses (`forge-test-github-repository`, `forge-test-gitlab-repository`) that stub leaf primitives (`forge--review-post-reply`, `forge--review-post-comment`, etc.) at the CLOS dispatch layer. `forge--review-submit` is NOT stubbed in these subclasses — the real method runs and tests stub `forge--rest` via `cl-letf` for payload verification.
 - **Pending comments**: `pending-p t` rows are locally staged. `forge-comment-pullreq`, `forge--submit-approve-pullreq`, and `forge--submit-request-changes` all flush them. `forge-add-single-review-comment` bypasses staging and posts directly.
 - **Post-submit sync**: `forge--review-submit` calls `forge--pull-topic` after posting, replacing locally-staged rows (with temporary IDs) with the server's canonical versions. GitHub always fires the pull (unconditionally in the REST callback). GitLab guards with `(when pending ...)` to skip the pull when no comments were staged, avoiding a spurious round-trip.
 - **Submit callback protocol**: all functions assigned to `forge--submit-post-function` must accept exactly two arguments `(repo post)`. DB-only staging callbacks (`forge-review--stage-comment`, `forge-review--save-comment-edit`) use `(_repo _post)` and ignore both. API-submitting callbacks are `cl-defmethod` generics specialised on the repo class.
