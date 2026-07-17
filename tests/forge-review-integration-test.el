@@ -72,6 +72,18 @@ data directly — the same mapping path forge--update-pullreq uses at runtime."
     (let-alist data
       .repository.pullRequest.reviewThreads)))
 
+;;; Synchronous mode for async methods
+
+(defmacro forge-itest--with-sync-rest (&rest body)
+  "Execute BODY with all HTTP requests forced synchronous.
+Binds `forge--rest-synchronous' and `forge--query-synchronous' to t,
+suppressing callbacks/errorbacks so requests block until complete.
+Use around every direct review method call in integration tests."
+  (declare (indent 0))
+  `(let ((forge--rest-synchronous t)
+         (forge--query-synchronous t))
+     ,@body))
+
 ;;; Test repo setup / teardown
 
 (defun forge-itest--github-repo ()
