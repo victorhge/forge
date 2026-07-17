@@ -101,6 +101,11 @@ hitting the network.  Use `forge-test--make-repo' to create instances.")
    (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/comments")
    (list (cons 'body text) (cons 'in_reply_to_id (oref opener database-id)))))
 
+;; Note: forge--submit-review-reply and forge--submit-add-single-review-comment
+;; are NOT stubbed here.  They inherit the forge-github-repository cl-defmethod
+;; implementations, which internally call forge--review-post-reply /
+;; forge--review-post-comment — those ARE stubbed, so no network calls escape.
+
 (cl-defmethod forge--review-set-thread-resolved
   ((_repo forge-test-github-repository) _pr opener resolved)
   (forge-test--record-mutate
@@ -155,6 +160,11 @@ hitting the network.  Use `forge-test--make-gl-repo' to create instances.")
     pr (format "/projects/:project/merge_requests/:number/discussions/%s/notes"
                (oref opener discussion-id)))
    (list (cons 'body text))))
+
+;; Note: forge--submit-review-reply and forge--submit-add-single-review-comment
+;; are NOT stubbed here.  They inherit the forge-gitlab-repository cl-defmethod
+;; implementations, which internally call forge--review-post-reply /
+;; forge--review-post-comment — those ARE stubbed, so no network calls escape.
 
 (cl-defmethod forge--review-set-thread-resolved
   ((_repo forge-test-gitlab-repository) pr opener resolved)
