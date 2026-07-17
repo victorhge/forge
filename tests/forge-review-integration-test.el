@@ -318,6 +318,7 @@ Deletes replies before the opener so GitLab permits opener deletion."
                      :id         pr-id
                      :repository repo-id
                      :number     .number
+                     :their-id   .node_id
                      :state      'open
                      :author     (alist-get 'login .user)
                      :title      .title
@@ -428,18 +429,11 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
                                owner name pr-number commit-sha path 1
                                "forge-itest post-reply opener")))
               (opener-db-id  (alist-get 'id opener-alist))
-              (opener-rc     (forge-pullreq-review-comment
-                              :id           (forge--object-id (oref pr-obj id)
-                                                              (number-to-string opener-db-id))
-                              :their-id     (number-to-string opener-db-id)
-                              :discussion-id "placeholder"
-                              :number  opener-db-id
-                              :pullreq      (oref pr-obj id)
-                              :new-path     path
-                              :new-line     1
-                              :body         "forge-itest post-reply opener"
-                              :pending-p    nil))
-              (_             (closql-insert (forge-db) opener-rc t))
+              ;; Fetch threads via GraphQL to get the real thread node ID.
+              (threads       (forge-itest--graphql-review-threads owner name pr-number))
+              (_             (forge--update-pullreq-review-comments repo-obj pr-obj threads))
+              (opener-rc     (seq-find (lambda (c) (null (oref c reply-to)))
+                                       (oref pr-obj review-comments)))
               (_             (forge-itest--with-sync-rest
                                (forge--review-post-reply repo-obj pr-obj opener-rc
                                                          "forge-itest post-reply body")))
@@ -461,11 +455,12 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
                               owner name pr-number commit-sha path 1
                               "forge-itest delete-comment"))
               (comment-id    (alist-get 'id comment-alist))
+              (comment-nid   (alist-get 'node_id comment-alist))
               (_             (push comment-id posted-ids))
               (rc            (forge-pullreq-review-comment
                               :id           (forge--object-id (oref pr-obj id)
                                                               (number-to-string comment-id))
-                              :their-id     (number-to-string comment-id)
+                              :their-id     comment-nid
                               :discussion-id "placeholder"
                               :number  comment-id
                               :pullreq      (oref pr-obj id)
