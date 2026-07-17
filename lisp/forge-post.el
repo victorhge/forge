@@ -316,11 +316,8 @@ Insert the value of `branch.BRANCH.description' of the source BRANCH."
     ("-a" forge-new-topic-set-assignees)
     ("-d" forge-new-pullreq-toggle-draft)]
    ["Actions"
-    ("C-c" "Stage as pending" forge-post-submit
-     :if (lambda () (eq forge-edit-post-action 'new-review-comment)))
-    ("C-c" "Submit"           forge-post-submit
-     :if-not (lambda () (eq forge-edit-post-action 'new-review-comment)))
-    ("C-C" "Submit now"       forge-post-submit-immediate
+    ("C-c" "Submit"           forge-post-submit)
+    ("C-s" "Stage as pending" forge-post-stage
      :if (lambda () (eq forge-edit-post-action 'new-review-comment)))
     ("C-k" "Cancel"           forge-post-cancel)]])
 
@@ -332,13 +329,13 @@ Insert the value of `branch.BRANCH.description' of the source BRANCH."
            (forge-get-repository forge--buffer-post-object)
            forge--buffer-post-object))
 
-(declare-function forge--submit-add-single-review-comment "forge-review" (repo post))
+(declare-function forge-review--stage-comment "forge-review" (repo post))
 
-(defun forge-post-submit-immediate ()
-  "Post an inline review comment immediately without staging as pending."
+(defun forge-post-stage ()
+  "Stage the current inline review comment as a pending (batch) comment."
   (interactive)
   (save-buffer)
-  (forge--submit-add-single-review-comment
+  (forge-review--stage-comment
    (forge-get-repository forge--buffer-post-object)
    forge--buffer-post-object))
 

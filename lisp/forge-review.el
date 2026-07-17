@@ -433,7 +433,7 @@ REPO is the `forge-repository' the pull request belongs to.")
                    (cdr result))))
     (forge--setup-post-buffer
       'new-review-comment
-      #'forge-review--stage-comment
+      #'forge--submit-add-single-review-comment
       "review-comment"
       (format "*forge: add review comment at line %s*" (or line "?"))
       `((forge--buffer-post-object ,pr)))))
