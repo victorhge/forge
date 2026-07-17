@@ -177,7 +177,8 @@ removed.  For submitted comments the forge API is called first."
     (when-let* ((pr   (closql-get (forge-db) (oref rc pullreq) 'forge-pullreq))
                 (repo (forge-get-repository pr)))
       (forge--review-delete-comment repo pr rc)))
-  (closql-delete rc))
+  (closql-delete rc)
+  (forge-refresh-buffer))
 
 ;;; Display – Section class with heading slot
 
@@ -465,8 +466,7 @@ REPO is the `forge-repository' the pull request belongs to.")
   "Discard the pending review comment at point."
   (interactive)
   (when-let ((rc (magit-section-value-if 'review-comment)))
-    (forge-discard-review-comment rc)
-    (forge-refresh-buffer)))
+    (forge-discard-review-comment rc)))
 
 (defun forge-reply-to-review-comment ()
   "Reply to the review comment at point."

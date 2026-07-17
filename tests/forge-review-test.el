@@ -84,16 +84,6 @@ The real `forge-database-file' is never touched."
   "Fake GitHub repository class whose write methods record calls instead of
 hitting the network.  Use `forge-test--make-repo' to create instances.")
 
-(cl-defmethod forge--review-submit ((_repo forge-test-github-repository) pr)
-  (let ((comments (forge--github-pending-review-comments pr))
-        (data     (list (cons 'event "COMMENT") (cons 'body ""))))
-    (when comments (push (cons 'comments comments) data))
-    (forge-test--record-rest
-     "POST"
-     (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/reviews")
-     data)
-    (forge--github-flush-pending-review-comments pr)))
-
 (cl-defmethod forge--review-post-reply
   ((_repo forge-test-github-repository) pr opener text)
   (forge-test--record-rest
@@ -131,26 +121,6 @@ hitting the network.  Use `forge-test--make-repo' to create instances.")
 (defclass forge-test-gitlab-repository (forge-gitlab-repository) ()
   "Fake GitLab repository class whose write methods record calls instead of
 hitting the network.  Use `forge-test--make-gl-repo' to create instances.")
-
-(cl-defmethod forge--review-submit ((_repo forge-test-gitlab-repository) pr)
-  (let* ((pending   (seq-filter (lambda (rc) (oref rc pending-p))
-                                (oref pr review-comments)))
-         (base-sha  (oref pr base-sha))
-         (start-sha (oref pr base-rev))
-         (head-sha  (oref pr head-rev)))
-    (dolist (rc pending)
-      (forge-test--record-rest
-       "POST"
-       (forge--format-resource pr "/projects/:project/merge_requests/:number/discussions")
-       (list (cons 'body (oref rc body))
-             (cons 'position (list (cons 'base_sha  base-sha)
-                                   (cons 'start_sha start-sha)
-                                   (cons 'head_sha  head-sha)
-                                   (cons 'position_type "text")
-                                   (cons 'new_path  (oref rc new-path))
-                                   (cons 'old_path  (or (oref rc old-path) (oref rc new-path)))
-                                   (cons 'new_line  (oref rc new-line))
-                                   (cons 'old_line  (oref rc old-line)))))))))
 
 (cl-defmethod forge--review-post-reply
   ((_repo forge-test-gitlab-repository) pr opener text)
@@ -300,35 +270,6 @@ OVERRIDES is a plist that replaces individual slots."
                 :pending-p     nil)
           overrides)))
 
-(defun forge-test--make-real-github-repo ()
-  "Insert and return a plain forge-github-repository (not the test subclass).
-Use in tests that need to dispatch to the REAL forge--review-submit method."
-  (let* ((repo (forge-github-repository
-                :id       forge-test--repo-id
-                :forge-id "123"
-                :forge    "github.com"
-                :owner    "alice"
-                :name     "myrepo"
-                :apihost  "api.github.com"
-                :githost  "github.com")))
-    (oset repo condition :tracked)
-    (closql-insert (forge-db) repo t)
-    repo))
-
-(defun forge-test--make-real-gitlab-repo ()
-  "Insert and return a plain forge-gitlab-repository (not the test subclass).
-Use in tests that need to dispatch to the REAL forge--review-submit method."
-  (let* ((repo (forge-gitlab-repository
-                :id       forge-test--gl-repo-id
-                :forge-id "456"
-                :forge    "gitlab.com"
-                :owner    "alice"
-                :name     "proj"
-                :apihost  "gitlab.com/api/v4"
-                :githost  "gitlab.com")))
-    (oset repo condition :tracked)
-    (closql-insert (forge-db) repo t)
-    repo))
 
 (defun forge-test--make-gl-pullreq (repo)
   "Insert and return a minimal forge-pullreq under REPO using the GitLab PR id."
@@ -897,10 +838,13 @@ Regression: the predicate previously required ch=?+ so context lines were never 
 
 ;;; Write operations
 
-;; These tests exercise the write generics via the fake subclasses
-;; (forge-test-github-repository, forge-test-gitlab-repository) defined
-;; above.  The stub methods record what would be sent to the API without
-;; making any network calls.  Use forge-test--make-repo / forge-test--make-gl-repo.
+;; These tests exercise the write generics.  For operations where the test
+;; fake-subclass stubs the primitive (forge--review-post-reply, etc.),
+;; forge-test--capture-request captures the recorded call.  For
+;; forge--review-submit, the REAL method runs — tests stub forge--rest via
+;; cl-letf so no network calls escape and forge-test--record-rest collects
+;; the payload.  forge--pull-topic is stubbed as a no-op in tests whose
+;; focus is payload shape; it is verified separately.
 
 (ert-deftest forge-review-write-github-batch-submit ()
   "Submitting two pending GitHub comments produces a single POST to the reviews endpoint."
@@ -915,7 +859,14 @@ Regression: the predicate previously required ch=?+ so context lines were never 
       (dolist (rc (list rc1 rc2))
         (closql-insert (forge-db) rc t))
       (let ((req (forge-test--capture-request
-                   (forge--review-submit repo pr))))
+                   (forge-test--capture-pull-topic
+                     (cl-letf (((symbol-function 'forge--rest)
+                                (lambda (obj method resource &optional params &rest _)
+                                  (forge-test--record-rest
+                                   method
+                                   (forge--format-resource obj resource)
+                                   params))))
+                       (forge--review-submit repo pr))))))
         (should (equal (plist-get req :method) "POST"))
         (should (string-match-p "pulls/42/reviews" (plist-get req :resource)))
         (let ((comments (alist-get 'comments (plist-get req :data))))
@@ -939,7 +890,14 @@ Regression: the predicate previously required ch=?+ so context lines were never 
       (dolist (rc (list rc1 rc2))
         (closql-insert (forge-db) rc t))
       (let ((calls (forge-test--capture-all-requests
-                     (forge--review-submit repo pr))))
+                     (forge-test--capture-pull-topic
+                       (cl-letf (((symbol-function 'forge--rest)
+                                  (lambda (obj method resource &optional params &rest _)
+                                    (forge-test--record-rest
+                                     method
+                                     (forge--format-resource obj resource)
+                                     params))))
+                         (forge--review-submit repo pr))))))
         (should (= (length calls) 2))
         (cl-every
          (lambda (c)
@@ -1017,7 +975,7 @@ Regression: the predicate previously required ch=?+ so context lines were never 
       (should-not (closql-get (forge-db) "rc-1" 'forge-pullreq-review-comment)))))
 
 (ert-deftest forge-review-write-pending-cleared-after-submit ()
-  "After a successful submit callback, pending-p becomes nil on all submitted rows."
+  "After forge--review-submit, pending-p becomes nil on all submitted rows."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
@@ -1027,7 +985,9 @@ Regression: the predicate previously required ch=?+ so context lines were never 
                    :id "rc-2" :pending-p t :body "B" :their-id "gh-2")))
       (dolist (rc (list rc1 rc2))
         (closql-insert (forge-db) rc t))
-      (forge--review-submit repo pr)
+      (forge-test--capture-pull-topic
+        (cl-letf (((symbol-function 'forge--rest) #'ignore))
+          (forge--review-submit repo pr)))
       (dolist (id '("rc-1" "rc-2"))
         (let ((fetched (closql-get (forge-db) id 'forge-pullreq-review-comment)))
           (should (null (oref fetched pending-p))))))))
@@ -1071,7 +1031,14 @@ Regression: the predicate previously required ch=?+ so context lines were never 
                    :id "rc-1" :pending-p t :body "GL test" :new-line 5)))
       (closql-insert (forge-db) rc t)
       (let ((calls (forge-test--capture-all-requests
-                     (forge--review-submit repo pr))))
+                     (forge-test--capture-pull-topic
+                       (cl-letf (((symbol-function 'forge--rest)
+                                  (lambda (obj method resource &optional params &rest _)
+                                    (forge-test--record-rest
+                                     method
+                                     (forge--format-resource obj resource)
+                                     params))))
+                         (forge--review-submit repo pr))))))
         (should (= (length calls) 1))
         (let ((pos (alist-get 'position (plist-get (car calls) :data))))
           (should (equal (alist-get 'base_sha pos) "merge-base-000"))
@@ -1088,7 +1055,14 @@ Regression: the predicate previously required ch=?+ so context lines were never 
                    :new-path "src/foo.el" :old-path nil :new-line 5)))
       (closql-insert (forge-db) rc t)
       (let* ((calls (forge-test--capture-all-requests
-                      (forge--review-submit repo pr)))
+                      (forge-test--capture-pull-topic
+                        (cl-letf (((symbol-function 'forge--rest)
+                                   (lambda (obj method resource &optional params &rest _)
+                                     (forge-test--record-rest
+                                      method
+                                      (forge--format-resource obj resource)
+                                      params))))
+                          (forge--review-submit repo pr)))))
              (pos (alist-get 'position (plist-get (car calls) :data))))
         (should (equal (alist-get 'new_path pos) "src/foo.el"))
         ;; old_path must fall back to new_path when old-path is nil
@@ -1140,7 +1114,14 @@ Regression: the predicate previously required ch=?+ so context lines were never 
            (rc   (forge-test--make-review-comment pr :pending-p t :body "Pending")))
       (closql-insert (forge-db) rc t)
       (let ((req (forge-test--capture-request
-                   (forge-comment-pullreq pr))))
+                   (forge-test--capture-pull-topic
+                     (cl-letf (((symbol-function 'forge--rest)
+                                (lambda (obj method resource &optional params &rest _)
+                                  (forge-test--record-rest
+                                   method
+                                   (forge--format-resource obj resource)
+                                   params))))
+                       (forge-comment-pullreq pr))))))
         (should (equal (plist-get req :method) "POST"))
         (should (string-match-p "pulls/42/reviews" (plist-get req :resource)))))))
 
@@ -1426,22 +1407,16 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
 ;;; Write operations — forge--pull-topic call verification
 ;;
 ;; The following three tests verify that `forge--review-submit' calls
-;; `forge--pull-topic' after posting.  They exercise the REAL implementations
-;; from forge-github.el / forge-gitlab.el (not the test-class stubs) by:
-;;  1. Inserting a plain forge-github/gitlab-repository into the DB so that
-;;     `forge-get-repository pr' returns the real class and method dispatch
-;;     selects the production implementation.
-;;  2. Stubbing `forge--rest' so network calls never happen.  The GitHub stub
-;;     also calls its `:callback' argument synchronously, because the
-;;     GitHub `forge--review-submit' invokes `forge--pull-topic' inside
-;;     that callback.
-;;  3. Stubbing `forge--pull-topic' with `forge-test--capture-pull-topic'
-;;     to record whether it was called.
+;; `forge--pull-topic' after posting.  The test-subclass repos are used
+;; because forge--review-submit is no longer overridden there — the real
+;; method dispatches on any subclass of forge-github/gitlab-repository.
+;; forge--rest is stubbed so no network calls happen; the GitHub stub fires
+;; the :callback synchronously since that is where forge--pull-topic is called.
 
 (ert-deftest forge-review-write-github-submit-calls-pull-topic ()
   "`forge--review-submit' on GitHub calls `forge--pull-topic' after posting."
   (forge-test--with-db
-    (let* ((repo (forge-test--make-real-github-repo))
+    (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
            (rc   (forge-test--make-review-comment pr :body "A comment")))
       (oset rc pending-p t)
@@ -1458,7 +1433,7 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
 (ert-deftest forge-review-write-gitlab-submit-calls-pull-topic ()
   "`forge--review-submit' on GitLab calls `forge--pull-topic' after posting."
   (forge-test--with-db
-    (let* ((repo (forge-test--make-real-gitlab-repo))
+    (let* ((repo (forge-test--make-gl-repo))
            (pr   (forge-test--make-gl-pullreq repo))
            (rc   (forge-test--make-gl-review-comment pr :body "GL comment")))
       (oset rc pending-p t)
@@ -1473,7 +1448,7 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
   "`forge--review-submit' on GitLab does not call `forge--pull-topic' when
 there are no pending comments — avoids spurious API round-trips."
   (forge-test--with-db
-    (let* ((repo (forge-test--make-real-gitlab-repo))
+    (let* ((repo (forge-test--make-gl-repo))
            (pr   (forge-test--make-gl-pullreq repo)))
       (let ((called (forge-test--capture-pull-topic
                       (forge--review-submit repo pr))))
