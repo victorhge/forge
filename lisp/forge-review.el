@@ -131,17 +131,21 @@ For context lines: returns an alist with both (old . N) and (new . N)."
 (cl-defgeneric forge--review-submit (repo pr)
   "Submit pending review comments on PR to the forge as a COMMENT review.")
 
-(cl-defgeneric forge--review-post-reply (repo pr opener text)
-  "Post TEXT as a reply to the thread whose opener is OPENER.")
+(cl-defgeneric forge--review-post-reply (repo pr opener text &key callback errorback)
+  "Post TEXT as a reply to the thread whose opener is OPENER.
+CALLBACK is called on success; ERRORBACK on failure.")
 
-(cl-defgeneric forge--review-set-thread-resolved (repo pr opener resolved)
-  "Resolve (RESOLVED t) or unresolve (RESOLVED nil) the thread at OPENER.")
+(cl-defgeneric forge--review-set-thread-resolved (repo pr opener resolved &key callback errorback)
+  "Resolve (RESOLVED t) or unresolve (RESOLVED nil) the thread at OPENER.
+CALLBACK is called on success; ERRORBACK on failure.")
 
-(cl-defgeneric forge--review-delete-comment (repo pr rc)
-  "Delete review comment RC from the forge.")
+(cl-defgeneric forge--review-delete-comment (repo pr rc &key callback errorback)
+  "Delete review comment RC from the forge.
+CALLBACK is called on success; ERRORBACK on failure.")
 
-(cl-defgeneric forge--review-post-comment (repo pr body path side line)
-  "Post BODY as a single immediate inline comment at PATH SIDE LINE.")
+(cl-defgeneric forge--review-post-comment (repo pr body path side line &key callback errorback)
+  "Post BODY as a single immediate inline comment at PATH SIDE LINE.
+CALLBACK is called on success; ERRORBACK on failure.")
 
 ;;; Discard
 
@@ -149,12 +153,17 @@ For context lines: returns an alist with both (old . N) and (new . N)."
   "Delete review comment RC from the database and the forge API.
 For pending (not-yet-submitted) comments only the local DB row is
 removed.  For submitted comments the forge API is called first."
-  (unless (oref rc pending-p)
+  (if (oref rc pending-p)
+      (progn
+        (closql-delete rc)
+        (forge-refresh-buffer))
     (when-let* ((pr   (closql-get (forge-db) (oref rc pullreq) 'forge-pullreq))
                 (repo (forge-get-repository pr)))
-      (forge--review-delete-comment repo pr rc)))
-  (closql-delete rc)
-  (forge-refresh-buffer))
+      (forge--review-delete-comment repo pr rc
+        :callback  (lambda (&rest _)
+                     (closql-delete rc)
+                     (forge-refresh-buffer))
+        :errorback (forge--post-submit-errorback)))))
 
 ;;; Display – Section class with heading slot
 

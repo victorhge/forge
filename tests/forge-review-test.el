@@ -85,11 +85,13 @@ The real `forge-database-file' is never touched."
 hitting the network.  Use `forge-test--make-repo' to create instances.")
 
 (cl-defmethod forge--review-post-reply
-  ((_repo forge-test-github-repository) pr opener text)
-  (forge-test--record-rest
-   "POST"
-   (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/comments")
-   (list (cons 'body text) (cons 'in_reply_to (oref opener number)))))
+  ((_repo forge-test-github-repository) _pr opener text &key callback errorback)
+  (ignore errorback)
+  (forge-test--record-mutate
+   'addPullRequestReviewThreadReply
+   (list (cons 'pullRequestReviewThreadId (oref opener discussion-id))
+         (cons 'body text)))
+  (when callback (funcall callback nil nil nil nil)))
 
 ;; Note: forge--submit-add-review-reply and forge--submit-add-single-review-comment
 ;; are NOT stubbed here.  They inherit the forge-github-repository cl-defmethod
@@ -97,38 +99,46 @@ hitting the network.  Use `forge-test--make-repo' to create instances.")
 ;; forge--review-post-comment — those ARE stubbed, so no network calls escape.
 
 (cl-defmethod forge--review-set-thread-resolved
-  ((_repo forge-test-github-repository) _pr opener resolved)
+  ((_repo forge-test-github-repository) _pr opener resolved &key callback errorback)
+  (ignore errorback)
   (forge-test--record-mutate
    (if resolved 'resolveReviewThread 'unresolveReviewThread)
-   (list (cons 'threadId (oref opener discussion-id)))))
+   (list (cons 'threadId (oref opener discussion-id))))
+  (when callback (funcall callback nil nil nil nil)))
 
 (cl-defmethod forge--review-delete-comment
-  ((_repo forge-test-github-repository) _pr rc)
+  ((_repo forge-test-github-repository) _pr rc &key callback errorback)
+  (ignore errorback)
   (forge-test--record-rest
    "DELETE"
    (forge--format-resource rc "/repos/:owner/:repo/pulls/comments/:number")
-   nil))
+   nil)
+  (when callback (funcall callback nil nil nil nil)))
 
 (cl-defmethod forge--review-post-comment
-  ((_repo forge-test-github-repository) pr body path side line)
+  ((_repo forge-test-github-repository) pr body path side line &key callback errorback)
+  (ignore errorback)
   (forge-test--record-rest
    "POST"
    (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/comments")
    (list (cons 'body body) (cons 'path path) (cons 'line line)
-         (cons 'side (if (eq side 'old) "LEFT" "RIGHT")))))
+         (cons 'side (if (eq side 'old) "LEFT" "RIGHT"))))
+  (when callback (funcall callback nil nil nil nil)))
 
 (defclass forge-test-gitlab-repository (forge-gitlab-repository) ()
   "Fake GitLab repository class whose write methods record calls instead of
 hitting the network.  Use `forge-test--make-gl-repo' to create instances.")
 
 (cl-defmethod forge--review-post-reply
-  ((_repo forge-test-gitlab-repository) pr opener text)
+  ((_repo forge-test-gitlab-repository) pr opener text &key callback errorback)
+  (ignore errorback)
   (forge-test--record-rest
    "POST"
    (forge--format-resource
     pr (format "/projects/:project/merge_requests/:number/discussions/%s/notes"
                (oref opener discussion-id)))
-   (list (cons 'body text))))
+   (list (cons 'body text)))
+  (when callback (funcall callback nil nil nil nil)))
 
 ;; Note: forge--submit-add-review-reply and forge--submit-add-single-review-comment
 ;; are NOT stubbed here.  They inherit the forge-gitlab-repository cl-defmethod
@@ -136,23 +146,28 @@ hitting the network.  Use `forge-test--make-gl-repo' to create instances.")
 ;; forge--review-post-comment — those ARE stubbed, so no network calls escape.
 
 (cl-defmethod forge--review-set-thread-resolved
-  ((_repo forge-test-gitlab-repository) pr opener resolved)
+  ((_repo forge-test-gitlab-repository) pr opener resolved &key callback errorback)
+  (ignore errorback)
   (forge-test--record-rest
    "PUT"
    (forge--format-resource
     pr (format "/projects/:project/merge_requests/:number/discussions/%s"
                (oref opener discussion-id)))
-   (list (cons 'resolved (if resolved t :false)))))
+   (list (cons 'resolved (if resolved t :false))))
+  (when callback (funcall callback nil nil nil nil)))
 
 (cl-defmethod forge--review-delete-comment
-  ((_repo forge-test-gitlab-repository) _pr rc)
+  ((_repo forge-test-gitlab-repository) _pr rc &key callback errorback)
+  (ignore errorback)
   (forge-test--record-rest
    "DELETE"
    (forge--format-resource rc "/projects/:project/merge_requests/:topic/notes/:number")
-   nil))
+   nil)
+  (when callback (funcall callback nil nil nil nil)))
 
 (cl-defmethod forge--review-post-comment
-  ((_repo forge-test-gitlab-repository) pr body path side line)
+  ((_repo forge-test-gitlab-repository) pr body path side line &key callback errorback)
+  (ignore errorback)
   (forge-test--record-rest
    "POST"
    (forge--format-resource pr "/projects/:project/merge_requests/:number/discussions")
@@ -164,7 +179,8 @@ hitting the network.  Use `forge-test--make-gl-repo' to create instances.")
                                (cons 'new_path  path)
                                (cons 'old_path  (or path ""))
                                (cons 'new_line  (when (eq side 'new) line))
-                               (cons 'old_line  (when (eq side 'old) line)))))))
+                               (cons 'old_line  (when (eq side 'old) line))))))
+  (when callback (funcall callback nil nil nil nil)))
 
 (defmacro forge-test--capture-request (&rest body)
   "Execute BODY, returning the last captured REST/mutate call as a plist.
@@ -229,6 +245,7 @@ Stubs `forge--pull-topic' as a no-op recorder."
               :id         forge-test--pr-id
               :repository (oref repo id)
               :number     42
+              :their-id   "PR_gh123"
               :state      'open
               :author     "bob"
               :title      "Add widget"
@@ -864,7 +881,7 @@ Regression: the predicate previously required ch=?+ so context lines were never 
 ;; focus is payload shape; it is verified separately.
 
 (ert-deftest forge-review-write-github-batch-submit ()
-  "Submitting two pending GitHub comments produces a single POST to the reviews endpoint."
+  "Submitting two pending GitHub comments sends a single addPullRequestReview mutation."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
@@ -877,21 +894,24 @@ Regression: the predicate previously required ch=?+ so context lines were never 
         (closql-insert (forge-db) rc t))
       (let ((req (forge-test--capture-request
                    (forge-test--capture-pull-topic
-                     (cl-letf (((symbol-function 'forge--rest)
-                                (lambda (obj method resource &optional params &rest _)
-                                  (forge-test--record-rest
-                                   method
-                                   (forge--format-resource obj resource)
-                                   params))))
+                     (cl-letf (((symbol-function 'forge--query)
+                                (lambda (_obj query variables &rest args)
+                                  (let* ((input (cdr (assq 'input variables)))
+                                         (threads (cdr (assq 'threads input))))
+                                    (forge-test--record-mutate
+                                     'addPullRequestReview
+                                     (list (cons 'threads threads))))
+                                  (let ((cb (cadr (memq :callback args))))
+                                    (when cb (funcall cb nil nil nil nil))))))
                        (forge--review-submit repo pr))))))
-        (should (equal (plist-get req :method) "POST"))
-        (should (string-match-p "pulls/42/reviews" (plist-get req :resource)))
-        (let ((comments (alist-get 'comments (plist-get req :data))))
-          (should (= (length comments) 2))
-          (should (cl-some (lambda (c) (equal (alist-get 'body c) "Comment A"))
-                           comments))
-          (should (cl-some (lambda (c) (equal (alist-get 'body c) "Comment B"))
-                           comments)))))))
+        (should (eq (plist-get req :mutation) 'addPullRequestReview))
+        (let ((threads (cdr (assq 'threads (plist-get req :args)))))
+          (should (= (length threads) 2))
+          (should (cl-some (lambda (t) (equal (cdr (assq 'body t)) "Comment A"))
+                           threads))
+          (should (cl-some (lambda (t) (equal (cdr (assq 'body t)) "Comment B"))
+                           threads)))))))
+
 
 (ert-deftest forge-review-write-gitlab-per-comment-post ()
   "Submitting two pending GitLab comments produces two POST requests, each with position."
@@ -926,8 +946,8 @@ Regression: the predicate previously required ch=?+ so context lines were never 
              (should (alist-get 'start_sha pos))))
          calls)))))
 
-(ert-deftest forge-review-write-github-reply-uses-in-reply-to ()
-  "Replying to a GitHub comment sends in_reply_to = number."
+(ert-deftest forge-review-write-github-reply-uses-thread-id ()
+  "Replying to a GitHub comment sends pullRequestReviewThreadId = discussion-id."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
@@ -936,8 +956,9 @@ Regression: the predicate previously required ch=?+ so context lines were never 
       (closql-insert (forge-db) opener t)
       (let ((req (forge-test--capture-request
                    (forge--review-post-reply repo pr opener "Reply text"))))
-        (should (string-match-p "pulls/42/comments" (plist-get req :resource)))
-        (should (= (alist-get 'in_reply_to (plist-get req :data)) 999))))))
+        (should (eq (plist-get req :mutation) 'addPullRequestReviewThreadReply))
+        (should (equal (alist-get 'pullRequestReviewThreadId (plist-get req :args)) "t1"))
+        (should (equal (alist-get 'body (plist-get req :args)) "Reply text"))))))
 
 (ert-deftest forge-review-write-gitlab-reply-uses-discussion-endpoint ()
   "Replying to a GitLab comment posts to the discussion notes sub-endpoint."
@@ -1003,7 +1024,10 @@ Regression: the predicate previously required ch=?+ so context lines were never 
       (dolist (rc (list rc1 rc2))
         (closql-insert (forge-db) rc t))
       (forge-test--capture-pull-topic
-        (cl-letf (((symbol-function 'forge--rest) #'ignore))
+        (cl-letf (((symbol-function 'forge--query)
+                   (lambda (_obj _query _vars &rest args)
+                     (let ((cb (cadr (memq :callback args))))
+                       (when cb (funcall cb nil nil nil nil))))))
           (forge--review-submit repo pr)))
       (dolist (id '("rc-1" "rc-2"))
         (should-not (closql-get (forge-db) id 'forge-pullreq-review-comment))))))
@@ -1123,7 +1147,7 @@ Regression: the predicate previously required ch=?+ so context lines were never 
         (should (string-match-p "merge_requests.*notes/42" (plist-get req :resource)))))))
 
 (ert-deftest forge-review-write-comment-pullreq-flushes-pending ()
-  "`forge-submit-pending-review' submits all pending comments for the pullreq."
+  "`forge-submit-pending-review' calls addPullRequestReview for pending comments."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
@@ -1131,15 +1155,14 @@ Regression: the predicate previously required ch=?+ so context lines were never 
       (closql-insert (forge-db) rc t)
       (let ((req (forge-test--capture-request
                    (forge-test--capture-pull-topic
-                     (cl-letf (((symbol-function 'forge--rest)
-                                (lambda (obj method resource &optional params &rest _)
-                                  (forge-test--record-rest
-                                   method
-                                   (forge--format-resource obj resource)
-                                   params))))
+                     (cl-letf (((symbol-function 'forge--query)
+                                (lambda (_obj _query _vars &rest args)
+                                  (forge-test--record-mutate
+                                   'addPullRequestReview nil)
+                                  (let ((cb (cadr (memq :callback args))))
+                                    (when cb (funcall cb nil nil nil nil))))))
                        (forge-submit-pending-review pr))))))
-        (should (equal (plist-get req :method) "POST"))
-        (should (string-match-p "pulls/42/reviews" (plist-get req :resource)))))))
+        (should (eq (plist-get req :mutation) 'addPullRequestReview))))))
 
 (defmacro forge-test--with-section-at-rc (rc &rest body)
   "Run BODY with point inside a review-comment section whose value is RC.
@@ -1369,9 +1392,9 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
                      (setq-local forge--buffer-post-object opener)
                      (setq-local forge--pre-post-buffer (current-buffer))
                      (forge-test--invoke-submit-fn #'forge--submit-add-review-reply repo opener)))))
-        (should (string-match-p "pulls/42/comments" (plist-get req :resource)))
-        (should (= (alist-get 'in_reply_to (plist-get req :data)) 999))
-        (should (equal (alist-get 'body (plist-get req :data)) "Reply body"))))))
+        (should (eq (plist-get req :mutation) 'addPullRequestReviewThreadReply))
+        (should (equal (alist-get 'pullRequestReviewThreadId (plist-get req :args)) "t1"))
+        (should (equal (alist-get 'body (plist-get req :args)) "Reply body"))))))
 
 (ert-deftest forge-review-write-github-pending-comments-shape ()
   "`forge--github-pending-review-comments' returns an alist with path/line/side/body."
@@ -1438,10 +1461,10 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
       (closql-insert (forge-db) rc t)
       (let ((called
              (forge-test--capture-pull-topic
-               (cl-letf (((symbol-function 'forge--rest)
-                          (lambda (&rest args)
+               (cl-letf (((symbol-function 'forge--query)
+                          (lambda (_obj _query _vars &rest args)
                             (let ((cb (cadr (memq :callback args))))
-                              (when cb (funcall cb nil nil nil))))))
+                              (when cb (funcall cb nil nil nil nil))))))
                  (forge--review-submit repo pr)))))
         (should called)))))
 
@@ -1537,8 +1560,8 @@ signal wrong-number-of-arguments."
                      (should-not (condition-case err
                                      (progn (forge-post-submit) nil)
                                    (wrong-number-of-arguments err)))))))
-        (should (string-match-p "pulls/42/comments" (plist-get req :resource)))
-        (should (equal (alist-get 'body (plist-get req :data))
+        (should (eq (plist-get req :mutation) 'addPullRequestReviewThreadReply))
+        (should (equal (alist-get 'body (plist-get req :args))
                        "Reply via forge-post-submit"))))))
 
 (ert-deftest forge-review-regression-submit-single-comment-via-forge-post-submit ()
