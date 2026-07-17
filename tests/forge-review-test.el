@@ -295,6 +295,18 @@ OVERRIDES is a plist that replaces individual slots."
 This exercises the two-argument dispatch protocol directly."
   (funcall fn repo post))
 
+(defmacro forge-test--with-post-buffer (submit-fn post-obj &rest body)
+  "Run BODY in a temp buffer configured as a forge post buffer.
+Sets `forge--submit-post-function' to SUBMIT-FN and
+`forge--buffer-post-object' to POST-OBJ.  Stubs `save-buffer' as a
+no-op so `forge-post-submit' can be called without a real file."
+  (declare (indent 2))
+  `(with-temp-buffer
+     (setq-local forge--submit-post-function ,submit-fn)
+     (setq-local forge--buffer-post-object ,post-obj)
+     (cl-letf (((symbol-function 'save-buffer) #'ignore))
+       ,@body)))
+
 ;;; Data model
 
 (ert-deftest forge-review-data-model-slot-round-trip ()
@@ -1345,6 +1357,110 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
         (let ((pos (alist-get 'position (plist-get req :data))))
           (should (= (alist-get 'new_line pos) 5))
           (should (null (alist-get 'old_line pos))))))))
+
+;;; forge-post-submit regression
+;;
+;; These tests call `forge-post-submit' itself — the real dispatcher —
+;; instead of calling submit functions directly.  They close the gap that
+;; allowed the original arity-mismatch bug to go undetected: if a future
+;; submit callback is written with zero args these tests will catch it
+;; because they go through the same code path a user triggers with C-c C-c.
+
+(ert-deftest forge-review-regression-stage-comment-via-forge-post-submit ()
+  "Calling `forge-post-submit' with forge-review--stage-comment as
+`forge--submit-post-function' must not signal wrong-number-of-arguments.
+This is the regression test for the original arity-mismatch bug."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo)))
+      (with-temp-buffer
+        (insert forge-test--simple-diff)
+        (diff-mode)
+        (goto-char (point-min))
+        (re-search-forward "^+(added-line-9)")
+        (beginning-of-line)
+        (let ((diff-buf (current-buffer)))
+          (forge-test--with-post-buffer #'forge-review--stage-comment pr
+            (insert "Regression test body")
+            (setq-local forge--pre-post-buffer diff-buf)
+            ;; This is the actual regression: forge-post-submit calls
+            ;; (funcall forge--submit-post-function repo post).
+            ;; If the arity is wrong it signals wrong-number-of-arguments.
+            (should-not (condition-case err
+                            (progn (forge-post-submit) nil)
+                          (wrong-number-of-arguments err))))))
+      (should (= (length (oref pr review-comments)) 1)))))
+
+(ert-deftest forge-review-regression-save-comment-edit-via-forge-post-submit ()
+  "Calling `forge-post-submit' with forge-review--save-comment-edit must not
+signal wrong-number-of-arguments."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (rc   (forge-test--make-review-comment pr :body "Original")))
+      (closql-insert (forge-db) rc t)
+      ;; forge-get-repository is called with rc (forge-pullreq-review-comment),
+      ;; which has no method; stub it to return the test repo.
+      (cl-letf (((symbol-function 'forge-get-repository) (lambda (_obj) repo)))
+        (forge-test--with-post-buffer #'forge-review--save-comment-edit rc
+          (insert "Edited body")
+          (setq-local forge--pre-post-buffer (current-buffer))
+          (should-not (condition-case err
+                          (progn (forge-post-submit) nil)
+                        (wrong-number-of-arguments err)))))
+      (should (equal (oref (closql-get (forge-db) "rc-1"
+                                       'forge-pullreq-review-comment)
+                           body)
+                     "Edited body")))))
+
+(ert-deftest forge-review-regression-submit-review-reply-via-forge-post-submit ()
+  "Calling `forge-post-submit' with forge--submit-review-reply must not
+signal wrong-number-of-arguments."
+  (forge-test--with-db
+    (let* ((repo   (forge-test--make-repo))
+           (pr     (forge-test--make-pullreq repo))
+           (opener (forge-test--make-review-comment pr
+                     :id "rc-opener" :database-id 999 :discussion-id "t1")))
+      (closql-insert (forge-db) opener t)
+      ;; forge-get-repository is called with opener (forge-pullreq-review-comment),
+      ;; which has no method; stub it to return the test repo.
+      (let ((req (forge-test--capture-request
+                   (cl-letf (((symbol-function 'forge-get-repository)
+                              (lambda (_obj) repo)))
+                     (forge-test--with-post-buffer #'forge--submit-review-reply opener
+                       (insert "Reply via forge-post-submit")
+                       (setq-local forge--pre-post-buffer (current-buffer))
+                       (should-not (condition-case err
+                                       (progn (forge-post-submit) nil)
+                                     (wrong-number-of-arguments err))))))))
+        (should (string-match-p "pulls/42/comments" (plist-get req :resource)))
+        (should (equal (alist-get 'body (plist-get req :data))
+                       "Reply via forge-post-submit"))))))
+
+(ert-deftest forge-review-regression-submit-single-comment-via-forge-post-submit ()
+  "Calling `forge-post-submit' with forge--submit-add-single-review-comment must not
+signal wrong-number-of-arguments."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo)))
+      (with-temp-buffer
+        (insert forge-test--simple-diff)
+        (diff-mode)
+        (goto-char (point-min))
+        (re-search-forward "^+(added-line-9)")
+        (beginning-of-line)
+        (let* ((diff-buf (current-buffer))
+               (req (forge-test--capture-request
+                      (forge-test--with-post-buffer
+                          #'forge--submit-add-single-review-comment pr
+                        (insert "Immediate via forge-post-submit")
+                        (setq-local forge--pre-post-buffer diff-buf)
+                        (should-not (condition-case err
+                                        (progn (forge-post-submit) nil)
+                                      (wrong-number-of-arguments err)))))))
+          (should (string-match-p "pulls/42/comments" (plist-get req :resource)))
+          (should (equal (alist-get 'body (plist-get req :data))
+                         "Immediate via forge-post-submit")))))))
 
 ;;; Display
 
