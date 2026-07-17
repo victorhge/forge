@@ -31,7 +31,7 @@
 
 ;;; Class
 
-(defclass forge-pullreq-review-comment (closql-object)
+(defclass forge-pullreq-review-comment (forge-object)
   ((closql-table         :initform 'pullreq-review-comment)
    (closql-primary-key   :initform 'id)
    (closql-order-by      :initform [(asc created)])

@@ -1448,11 +1448,9 @@
      (if resolved 'resolveReviewThread 'unresolveReviewThread))
     (list (cons 'input (list (cons 'threadId (oref opener discussion-id)))))))
 
-(cl-defmethod forge--review-delete-comment ((_repo forge-github-repository) pr rc)
+(cl-defmethod forge--review-delete-comment ((_repo forge-github-repository) _pr rc)
   "DELETE a submitted review comment RC from GitHub."
-  (forge--rest pr "DELETE"
-    (format "/repos/:owner/:repo/pulls/comments/%d" (oref rc number))
-    nil))
+  (forge--rest rc "DELETE" "/repos/:owner/:repo/pulls/comments/:number" nil))
 
 (cl-defmethod forge--review-post-comment ((_repo forge-github-repository) pr body path side line)
   "POST a single immediate inline comment at PATH SIDE LINE on GitHub."

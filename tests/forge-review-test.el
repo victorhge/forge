@@ -103,11 +103,10 @@ hitting the network.  Use `forge-test--make-repo' to create instances.")
    (list (cons 'threadId (oref opener discussion-id)))))
 
 (cl-defmethod forge--review-delete-comment
-  ((_repo forge-test-github-repository) pr rc)
+  ((_repo forge-test-github-repository) _pr rc)
   (forge-test--record-rest
    "DELETE"
-   (forge--format-resource
-    pr (format "/repos/:owner/:repo/pulls/comments/%d" (oref rc number)))
+   (forge--format-resource rc "/repos/:owner/:repo/pulls/comments/:number")
    nil))
 
 (cl-defmethod forge--review-post-comment
@@ -146,12 +145,10 @@ hitting the network.  Use `forge-test--make-gl-repo' to create instances.")
    (list (cons 'resolved (if resolved t :false)))))
 
 (cl-defmethod forge--review-delete-comment
-  ((_repo forge-test-gitlab-repository) pr rc)
+  ((_repo forge-test-gitlab-repository) _pr rc)
   (forge-test--record-rest
    "DELETE"
-   (forge--format-resource
-    pr (format "/projects/:project/merge_requests/:number/notes/%d"
-               (oref rc number)))
+   (forge--format-resource rc "/projects/:project/merge_requests/:topic/notes/:number")
    nil))
 
 (cl-defmethod forge--review-post-comment

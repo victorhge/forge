@@ -794,11 +794,10 @@
             (oref opener discussion-id))
     (list (cons 'resolved (if resolved t :false)))))
 
-(cl-defmethod forge--review-delete-comment ((_repo forge-gitlab-repository) pr rc)
+(cl-defmethod forge--review-delete-comment ((_repo forge-gitlab-repository) _pr rc)
   "DELETE a submitted review comment RC from GitLab."
-  (forge--rest pr "DELETE"
-    (format "/projects/:project/merge_requests/:number/notes/%d" (oref rc number))
-    nil))
+  (forge--rest rc "DELETE"
+    "/projects/:project/merge_requests/:topic/notes/:number" nil))
 
 (cl-defmethod forge--review-post-comment ((_repo forge-gitlab-repository) pr body path side line)
   "POST a single immediate inline comment at PATH SIDE LINE on GitLab."
