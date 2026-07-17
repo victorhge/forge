@@ -1421,17 +1421,17 @@
 (cl-defmethod forge--review-submit ((_repo forge-github-repository) pr)
   "POST all pending review comments for PR to GitHub as a COMMENT review."
   (let* ((repo     (forge-get-repository pr))
-         (comments (forge--github-pending-review-comments pr))
+         (pending  (forge--github-pending-review-comments pr))
          (data     (list (cons 'event "COMMENT")
                          (cons 'body  ""))))
-    (when comments
-      (push (cons 'comments (vconcat comments)) data))
+    (when pending
+      (push (cons 'comments (vconcat pending)) data))
     (forge--rest pr "POST"
       "/repos/:owner/:repo/pulls/:number/reviews"
-      data
-      :callback (lambda (&rest _)
-                  (forge--pull-topic repo pr)))
-    (forge--github-flush-pending-review-comments pr)))
+      data)
+    (forge--github-flush-pending-review-comments pr)
+    (when pending
+      (forge--pull-topic repo pr))))
 
 (cl-defmethod forge--review-post-reply ((_repo forge-github-repository) pr opener text)
   "POST a reply to OPENER's thread on GitHub."
