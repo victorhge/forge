@@ -393,8 +393,8 @@ Clears any existing overlays first, then places fresh ones."
   "C-c C-k"                    #'forge-discard-review-comment-at-point
   "C-c C-r"                    #'forge-reply-to-review-comment)
 
-(defun forge--submit-add-review-comment ()
-  "Submit a new inline review comment from the current post buffer."
+(defun forge-review--stage-comment (_repo _post)
+  "Stage a new pending inline review comment from the current post buffer."
   (let* ((pr      forge--buffer-post-object)
          (body    (forge--clear-comment-input (buffer-string)))
          (result  (with-current-buffer forge--pre-post-buffer
@@ -419,7 +419,7 @@ Clears any existing overlays first, then places fresh ones."
     (closql-insert (forge-db) rc t)
     (forge-refresh-buffer forge--pre-post-buffer)))
 
-(defun forge--submit-edit-review-comment ()
+(defun forge-review--save-comment-edit (_repo _post)
   "Save edits to the current review comment."
   (let* ((rc   forge--buffer-post-object)
          (body (forge--clear-comment-input (buffer-string))))
@@ -451,7 +451,7 @@ Clears any existing overlays first, then places fresh ones."
                    (cdr result))))
     (forge--setup-post-buffer
       'new-review-comment
-      #'forge--submit-add-review-comment
+      #'forge-review--stage-comment
       "review-comment"
       (format "*forge: add review comment at line %s*" (or line "?"))
       `((forge--buffer-post-object ,pr)))))
@@ -462,7 +462,7 @@ Clears any existing overlays first, then places fresh ones."
   (when-let ((rc (magit-section-value-if 'review-comment)))
     (forge--setup-post-buffer
       rc
-      #'forge--submit-edit-review-comment
+      #'forge-review--save-comment-edit
       "review-comment"
       "*forge: edit review comment*")))
 
