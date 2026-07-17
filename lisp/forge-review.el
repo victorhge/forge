@@ -491,21 +491,6 @@ REPO is the `forge-repository' the pull request belongs to.")
   "Post a single immediate inline comment from the current post buffer.
 REPO is the `forge-repository'; POST is the `forge-pullreq'.")
 
-(defun forge-add-single-review-comment ()
-  "Add a single (non-batch) inline comment, posted directly to the API."
-  (interactive)
-  (let* ((pr     (forge-current-pullreq t))
-         (result (forge--diff-line-number-at-point))
-         (line   (if (and (consp result) (consp (car result)))
-                     (alist-get 'new result)
-                   (cdr result))))
-    (forge--setup-post-buffer
-      'new-single-review-comment
-      #'forge--submit-add-single-review-comment
-      "review-comment"
-      (format "*forge: add immediate comment at line %s*" (or line "?"))
-      `((forge--buffer-post-object ,pr)))))
-
 (defun forge-submit-pending-review (pullreq)
   "Submit pending review comments on PULLREQ."
   (interactive (list (forge-current-pullreq t)))

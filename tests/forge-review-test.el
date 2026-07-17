@@ -1573,9 +1573,8 @@ signal wrong-number-of-arguments."
         (should (equal (alist-get 'body (plist-get req :args))
                        "Reply via forge-post-submit"))))))
 
-(ert-deftest forge-review-regression-submit-single-comment-via-forge-post-submit ()
-  "Calling `forge-post-submit' with forge--submit-add-single-review-comment must not
-signal wrong-number-of-arguments."
+(ert-deftest forge-review-regression-submit-single-comment-via-forge-post-submit-immediate ()
+  "`forge-post-submit-immediate' calls `forge--submit-add-single-review-comment'."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo)))
@@ -1588,15 +1587,13 @@ signal wrong-number-of-arguments."
         (let* ((diff-buf (current-buffer))
                (req (forge-test--capture-request
                       (forge-test--with-post-buffer
-                          #'forge--submit-add-single-review-comment pr
-                        (insert "Immediate via forge-post-submit")
+                          #'forge-review--stage-comment pr
+                        (insert "Immediate via forge-post-submit-immediate")
                         (setq-local forge--pre-post-buffer diff-buf)
-                        (should-not (condition-case err
-                                        (progn (forge-post-submit) nil)
-                                      (wrong-number-of-arguments err)))))))
+                        (forge-post-submit-immediate)))))
           (should (string-match-p "pulls/42/comments" (plist-get req :resource)))
           (should (equal (alist-get 'body (plist-get req :data))
-                         "Immediate via forge-post-submit")))))))
+                         "Immediate via forge-post-submit-immediate")))))))
 
 ;;; Display
 

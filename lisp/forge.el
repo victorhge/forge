@@ -160,8 +160,7 @@ is loaded, then `magit-mode-map' ends up being modified anyway.")
     '(7 "M" "Merge using API" forge-merge))
 
   (with-eval-after-load 'magit-diff
-    (keymap-set magit-diff-mode-map "C-c r c" #'forge-add-review-comment)
-    (keymap-set magit-diff-mode-map "C-c r C" #'forge-add-single-review-comment)))
+    (keymap-set magit-diff-mode-map "C-c r c" #'forge-add-review-comment)))
 
 ;;; Startup Asserts
 

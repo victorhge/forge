@@ -48,7 +48,7 @@ use `forge-edit-post-hook'."
 Consult the variable `forge-edit-post-action' to determine the action;
 one of `new-discussion', `new-issue', `new-pullreq', `new-answer',
 `new-comment', `new-approval', `new-request', `new-review-comment',
-`new-single-review-comment', `reply' and `edit'."
+`reply' and `edit'."
   :package-version '(forge . "0.6.0")
   :group 'forge
   :type 'hook
@@ -131,7 +131,7 @@ an error."
   "The action being carried out by editing this post buffer.
 One of `new-discussion', `new-issue', `new-pullreq', `new-answer',
 `new-comment', `new-approval', `new-request', `new-review-comment',
-`new-single-review-comment', `reply' and `edit'.")
+`reply' and `edit'.")
 
 (defvar-local forge--buffer-post-object nil)
 (defvar-local forge--buffer-template nil)
@@ -316,8 +316,13 @@ Insert the value of `branch.BRANCH.description' of the source BRANCH."
     ("-a" forge-new-topic-set-assignees)
     ("-d" forge-new-pullreq-toggle-draft)]
    ["Actions"
-    ("C-c" "Submit" forge-post-submit)
-    ("C-k" "Cancel" forge-post-cancel)]])
+    ("C-c" "Stage as pending" forge-post-submit
+     :if (lambda () (eq forge-edit-post-action 'new-review-comment)))
+    ("C-c" "Submit"           forge-post-submit
+     :if-not (lambda () (eq forge-edit-post-action 'new-review-comment)))
+    ("C-C" "Submit now"       forge-post-submit-immediate
+     :if (lambda () (eq forge-edit-post-action 'new-review-comment)))
+    ("C-k" "Cancel"           forge-post-cancel)]])
 
 (defun forge-post-submit ()
   "Submit the post that is being edited in the current buffer."
@@ -326,6 +331,16 @@ Insert the value of `branch.BRANCH.description' of the source BRANCH."
   (funcall forge--submit-post-function
            (forge-get-repository forge--buffer-post-object)
            forge--buffer-post-object))
+
+(declare-function forge--submit-add-single-review-comment "forge-review" (repo post))
+
+(defun forge-post-submit-immediate ()
+  "Post an inline review comment immediately without staging as pending."
+  (interactive)
+  (save-buffer)
+  (forge--submit-add-single-review-comment
+   (forge-get-repository forge--buffer-post-object)
+   forge--buffer-post-object))
 
 (defun forge-post-cancel ()
   "Cancel the post that is being edited in the current buffer."

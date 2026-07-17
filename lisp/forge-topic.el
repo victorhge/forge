@@ -34,7 +34,6 @@
 
 (declare-function forge-submit-pending-review    "forge-review" (pullreq))
 (declare-function forge-add-review-comment       "forge-review" ())
-(declare-function forge-add-single-review-comment "forge-review" ())
 (declare-function forge-resolve-review-thread    "forge-review" ())
 (declare-function forge-unresolve-review-thread  "forge-review" ())
 (declare-function forge-discard-review-comment-at-point "forge-review" ())
@@ -1612,7 +1611,6 @@ With prefix argument VISIT, also visit the topic."
     :if (lambda () (forge-pullreq-p (forge-current-topic)))
     ("/v" "submit review"  forge-submit-pending-review)
     ("/n" "add comment"    forge-add-review-comment)
-    ("/N" "add immediate"  forge-add-single-review-comment)
     ("/K" "discard draft"  forge-discard-review-comment-at-point)
     ("/x" "resolve thread" forge-resolve-review-thread)
     ("/X" "unresolve thread" forge-unresolve-review-thread)]]
