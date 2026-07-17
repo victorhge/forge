@@ -58,6 +58,14 @@
    (reactions     :initarg :reactions)
    (pending-p     :initarg :pending-p)))
 
+;;; Query
+
+(cl-defmethod forge-get-parent ((rc forge-pullreq-review-comment))
+  (closql-get (forge-db) (oref rc pullreq) 'forge-pullreq))
+
+(cl-defmethod forge-get-repository ((rc forge-pullreq-review-comment))
+  (forge-get-repository (forge-get-parent rc)))
+
 ;;; Fetch / Mapping – generics (methods live in forge-github.el / forge-gitlab.el)
 
 (cl-defgeneric forge--update-pullreq-review-comments (repo pr threads)

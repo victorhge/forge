@@ -359,6 +359,26 @@ no-op so `forge-post-submit' can be called without a real file."
         (should (= (length replies) 2))
         (should (cl-every (lambda (c) (equal (oref c reply-to) "t1")) replies))))))
 
+(ert-deftest forge-review-data-model-get-parent-returns-pullreq ()
+  "`forge-get-parent' on a review comment returns its owning pullreq."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (rc   (forge-test--make-review-comment pr)))
+      (closql-insert (forge-db) rc t)
+      (should (equal (oref (forge-get-parent rc) id)
+                     (oref pr id))))))
+
+(ert-deftest forge-review-data-model-get-repository-returns-repo ()
+  "`forge-get-repository' on a review comment returns its owning repository."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (rc   (forge-test--make-review-comment pr)))
+      (closql-insert (forge-db) rc t)
+      (should (equal (oref (forge-get-repository rc) id)
+                     (oref repo id))))))
+
 (ert-deftest forge-review-data-model-pending-flag-persists ()
   "A pending comment's `pending-p' survives a DB close/reopen cycle."
   (forge-test--with-db
