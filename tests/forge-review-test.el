@@ -350,6 +350,39 @@ no-op so `forge-post-submit' can be called without a real file."
         (should (equal (oref fetched reactions)     '((thumbs-up . 2))))
         (should (equal (oref fetched pending-p)     nil))))))
 
+(ert-deftest forge-review-data-model-nullable-slots-are-nil-after-db-round-trip ()
+  "Nullable slots read back as nil (not unbound) when the DB column is NULL.
+Regression: without :initform nil, closql leaves slots unbound on NULL
+columns, causing \"Unbound slot\" errors during display."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           ;; Construct with only the mandatory slots; omit all nullable ones.
+           (rc   (forge-pullreq-review-comment
+                  :id      "rc-nullable"
+                  :number  0
+                  :pullreq (oref pr id)
+                  :author  "alice"
+                  :created "2026-01-01T00:00:00Z"
+                  :updated "2026-01-01T00:00:00Z"
+                  :body    "minimal")))
+      (closql-insert (forge-db) rc t)
+      (let ((fetched (closql-get (forge-db) "rc-nullable"
+                                 'forge-pullreq-review-comment)))
+        ;; Each of these would signal "Unbound slot" before the fix.
+        (should (null (oref fetched their-id)))
+        (should (null (oref fetched discussion-id)))
+        (should (null (oref fetched new-path)))
+        (should (null (oref fetched old-path)))
+        (should (null (oref fetched new-line)))
+        (should (null (oref fetched old-line)))
+        (should (null (oref fetched diff-hunk)))
+        (should (null (oref fetched outdated-p)))
+        (should (null (oref fetched resolved-p)))
+        (should (null (oref fetched reply-to)))
+        (should (null (oref fetched review-state)))
+        (should (null (oref fetched pending-p)))))))
+
 (ert-deftest forge-review-data-model-opener-vs-reply-identity ()
   "One opener and two replies; query returns correct structure."
   (forge-test--with-db
