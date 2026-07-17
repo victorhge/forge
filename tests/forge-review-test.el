@@ -1283,7 +1283,7 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
                      (insert "Reply body")
                      (setq-local forge--buffer-post-object opener)
                      (setq-local forge--pre-post-buffer (current-buffer))
-                     (forge--submit-review-reply)))))
+                     (forge-test--invoke-submit-fn #'forge--submit-review-reply repo opener)))))
         (should (string-match-p "pulls/42/comments" (plist-get req :resource)))
         (should (= (alist-get 'in_reply_to_id (plist-get req :data)) 999))
         (should (equal (alist-get 'body (plist-get req :data)) "Reply body"))))))

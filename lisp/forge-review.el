@@ -426,14 +426,9 @@ Clears any existing overlays first, then places fresh ones."
     (oset rc body body)
     (forge-refresh-buffer forge--pre-post-buffer)))
 
-(defun forge--submit-review-reply ()
-  "Submit a reply to the review comment in the current post buffer."
-  (let* ((opener forge--buffer-post-object)
-         (pr     (closql-get (forge-db) (oref opener pullreq) 'forge-pullreq))
-         (repo   (forge-get-repository pr))
-         (body   (forge--clear-comment-input (buffer-string))))
-    (forge--review-post-reply repo pr opener body)
-    (forge-refresh-buffer forge--pre-post-buffer)))
+(cl-defgeneric forge--submit-review-reply (repo opener)
+  "Submit a reply to the review comment OPENER in the current post buffer.
+REPO is the `forge-repository' the pull request belongs to.")
 
 (defun forge--diff-file-at-point ()
   "Return the file path for the current diff hunk."
