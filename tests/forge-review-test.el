@@ -1868,6 +1868,33 @@ Regression: when-let* on (comments ()) short-circuited the clear call."
         (should-not (cl-some (lambda (o) (overlay-get o 'forge-review-comment))
                              (overlays-in (point-min) (point-max))))))))
 
+(ert-deftest forge-review-display-buffer-topic-propagated-to-diff-buffer ()
+  "forge--propagate-buffer-topic copies forge-buffer-topic from the originating
+buffer into a new magit-diff-mode buffer via magit-previous-section."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo)))
+      (let ((src-buf (generate-new-buffer " *forge-prop-test-src*")))
+        (unwind-protect
+            (progn
+              (with-current-buffer src-buf
+                (insert "topic content\n")
+                (setq-local forge-buffer-topic pr))
+              ;; Build a minimal section whose start marker points into src-buf.
+              (let* ((marker (with-current-buffer src-buf
+                               (copy-marker (point-min))))
+                     (src-section (let ((s (magit-section)))
+                                    (oset s start marker)
+                                    s)))
+                ;; Simulate a new magit-diff-mode buffer created from src-buf.
+                (with-temp-buffer
+                  (magit-diff-mode)
+                  (setq-local magit-previous-section src-section)
+                  (forge--propagate-buffer-topic)
+                  (should (eq forge-buffer-topic pr))
+                  (should (eq (forge-current-pullreq) pr)))))
+          (kill-buffer src-buf))))))
+
 ;;; Thread navigation
 
 (defun forge-test--make-nav-buffer ()

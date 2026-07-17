@@ -1337,7 +1337,7 @@ from a forge topic buffer inherit the topic context."
     (when-let* ((src   (marker-buffer
                         (oref magit-previous-section start)))
                 (topic (buffer-local-value 'forge-buffer-topic src)))
-      (when (forge-topic-p topic)
+      (when (forge--childp topic 'forge-topic)
         (setq forge-buffer-topic topic)))))
 
 (add-hook 'magit-setup-buffer-hook #'forge--propagate-buffer-topic)
