@@ -13,7 +13,7 @@ make clean       # Remove compiled .elc files and generated autoloads
 
 Compilation requires dependencies on the load path. `default.mk` expects sibling directories (e.g., `../../magit/lisp`, `../../ghub/lisp`) relative to the `lisp/` directory, or set `LOAD_PATH` manually.
 
-`make test` runs the ERT suite in `tests/forge-review-test.el` (90 tests). It uses `package-initialize` to load dependencies from the user's installed ELPA — no path configuration needed. Requires `compat-31.x` (not `compat-30.x`) to satisfy `closql`'s `compat-call sort` usage.
+`make test` runs the ERT suite in `tests/forge-review-test.el` (92 tests). It uses `package-initialize` to load dependencies from the user's installed ELPA — no path configuration needed. Requires `compat-31.x` (not `compat-30.x`) to satisfy `closql`'s `compat-call sort` usage.
 
 ## Architecture
 
@@ -26,23 +26,26 @@ The `lisp/Makefile` encodes the load order:
 ```
 forge-db  →  forge-core  →  forge  →  forge-repo, forge-post
                                   →  forge-topic  →  forge-{issue,pullreq,discussion,revnote}
+                                  →  forge-review
                                   →  forge-client  →  forge-{github,gitlab,forgejo,gitea,gogs,bitbucket}
                                   →  forge-commands, forge-tablist  →  forge-{topics,repos}
 ```
 
+`forge-review.el` sits between `forge-pullreq.el` and the backends because the backends (`forge-github.el`, `forge-gitlab.el`) implement the `cl-defgeneric` declarations from `forge-review.el`.
+
 ### Key files
 
-- **`forge-db.el`** — SQLite schema (version 15, via `closql`/`emacsql`). Contains `forge--db-table-schemata` (all table definitions) and `forge--db-update-schema` (migration path from each prior version). The database is automatically backed up before schema upgrades.
-- **`forge-core.el`** — Base `forge-object` EIEIO class, `forge-alist` (maps git/api/web hosts to repository classes), `forge-get-repository`/`forge-get-topic` generics, URL parsing (`forge--split-forge-url`), and object ID utilities.
+- **`forge-db.el`** — SQLite schema (version 16, via `closql`/`emacsql`). Contains `forge--db-table-schemata` (all table definitions) and `forge--db-update-schema` (migration path from each prior version). The database is automatically backed up before schema upgrades.
+- **`forge-core.el`** — Base `forge-object` EIEIO class, `forge-alist` (maps git/api/web hosts to repository classes), `forge-get-repository`/`forge-get-topic` generics, URL parsing (`forge--split-forge-url`), object ID utilities, and `forge--format-resource` (resolves `:slot` placeholders in resource paths by walking the `forge-get-parent` chain).
 - **`forge.el`** — Entry point. Loads all modules, registers sections into `magit-status-sections-hook`, and adds keybindings/transient suffixes to Magit.
 - **`forge-repo.el`** — `forge-repository` EIEIO class with all repository slots and URL format class-allocated slots.
 - **`forge-post.el`** / **`forge-topic.el`** — Base classes for posts and topics (issues, PRs, discussions). Object hierarchy: `repository > topic > post`.
-- **`forge-client.el`** — `forge-query`/`forge-mutate` macros (GraphQL via `ghub`) and `forge-rest` macro (REST). `forge--format-resource` interpolates `:slot` placeholders in resource paths.
+- **`forge-client.el`** — `forge-query`/`forge-mutate` macros (GraphQL via `ghub`) and `forge-rest` macro (REST). `forge--format-resource` interpolates `:slot` placeholders in resource paths by walking up `forge-get-parent`.
 - **`forge-{github,gitlab,forgejo,gitea,gogs,bitbucket}.el`** — Per-forge repository subclasses with URL format slots, and forge-specific `forge--pull` / `forge--update-*` method implementations. `forge-github.el` and `forge-gitlab.el` also implement the review-comment generics declared in `forge-review.el` (`forge--update-pullreq-review-comments`, `forge--review-submit`, `forge--review-post-reply`, `forge--review-set-thread-resolved`, `forge--review-delete-comment`, `forge--review-post-comment`, `forge--submit-add-review-reply`, `forge--submit-add-single-review-comment`).
 - **`forge-semi.el`** — "Semi-forges" (cgit, stagit, sr.ht, etc.) that have no API; only browsing is supported.
 - **`forge-commands.el`** — All user-facing `transient-define-prefix` commands (`forge-dispatch` and sub-menus).
 - **`forge-topics.el`** / **`forge-repos.el`** — Tablist-based list views for topics and repositories.
-- **`forge-review.el`** — Inline PR/MR review comment support (new, schema v16). `forge-pullreq-review-comment` EIEIO class; `cl-defgeneric` declarations for the fetch/mapping and write-operation generics (implemented in the backend files); display via `magit-section` in the topic buffer and `after-string` overlays in diff buffers; diff line-number utilities; interactive commands (`forge-add-review-comment`, `forge-reply-to-review-comment`, `forge-resolve/unresolve-review-thread`, `forge-submit-pending-review`, etc.); DB-only staging helpers `forge-review--stage-comment` and `forge-review--save-comment-edit` (used as `forge--submit-post-function` callbacks for local-only operations).
+- **`forge-review.el`** — Inline PR/MR review comment support (schema v16). `forge-pullreq-review-comment` EIEIO class (extends `forge-object`); `forge-get-parent` and `forge-get-repository` methods so review comments participate in the standard `forge--format-resource` URL resolution chain; `cl-defgeneric` declarations for all fetch/mapping and write-operation generics (implemented in the backend files); display via `magit-section` in the topic buffer and `after-string` overlays in diff buffers; diff line-number utilities; interactive commands (`forge-add-review-comment`, `forge-reply-to-review-comment`, `forge-resolve/unresolve-review-thread`, `forge-submit-pending-review`, `forge-add-single-review-comment`, etc.); DB-only staging helpers `forge-review--stage-comment` and `forge-review--save-comment-edit` (used as `forge--submit-post-function` callbacks for local-only operations).
 
 ### Object hierarchy
 
@@ -77,7 +80,12 @@ closql-object
     └── forge-pullreq-review-comment    (forge-review.el) — not a post; inline diff comment
 ```
 
-`forge-pullreq-review-comment` is a `closql-object` directly (not via `forge-post`) because it has different slot semantics and is not part of the issue/PR conversation thread.
+`forge-pullreq-review-comment` extends `forge-object` directly (not `forge-post`) because it has different slot semantics and is not part of the issue/PR conversation thread. It participates in the standard forge object hierarchy via:
+- `forge-get-parent` → returns the owning `forge-pullreq`
+- `forge-get-repository` → delegates to `forge-get-parent`
+- `forge--format` → delegates to `forge-get-parent`
+
+This wiring means `(forge--rest rc "VERB" "/path/:with/:slots")` resolves all URL segments correctly: `:number` → `rc.number` (comment/note ID), `:topic` → `pr.number` (MR iid, via parent walk since `rc` is not a `forge-topic`), `:project`/`:owner`/`:repo` → from the repository.
 
 ### Repository identity and tracking states
 
@@ -97,10 +105,11 @@ Every source file uses `cond-let` read-symbol-shorthands declared in file-local 
 ### Inline review comment invariants
 
 - **DB column order**: `base-sha` and `review-comments` were added to `forge-pullreq` via `ALTER TABLE` and must remain at the **end** of the slot list in `forge-pullreq.el` to match closql's positional INSERT.
+- **`number` slot**: stores the forge-assigned comment/note ID (GitHub `databaseId`, GitLab note `id`). It is not the same as the PR's `number` — use `:topic` in URL paths to reference the PR iid and `:number` to reference the comment ID.
 - **Thread openers vs replies**: `reply-to nil` marks a thread opener; `reply-to = discussion-id` marks a reply. All write operations (resolve, reply, delete) dispatch on the opener's `discussion-id`.
 - **API calls in write methods**: backend `cl-defmethod` implementations call `forge--rest` and `forge--query` directly. Tests use fake subclasses (`forge-test-github-repository`, `forge-test-gitlab-repository`) that stub leaf primitives (`forge--review-post-reply`, `forge--review-post-comment`, etc.) at the CLOS dispatch layer. `forge--review-submit` is NOT stubbed in these subclasses — the real method runs and tests stub `forge--rest` via `cl-letf` for payload verification.
 - **Pending comments**: `pending-p t` rows are locally staged. `forge-submit-pending-review`, `forge--submit-approve-pullreq`, and `forge--submit-request-changes` all flush them. `forge-add-single-review-comment` bypasses staging and posts directly.
-- **Post-submit sync**: `forge--review-submit` calls `forge--pull-topic` after posting, replacing locally-staged rows (with temporary IDs) with the server's canonical versions. GitHub always fires the pull (unconditionally in the REST callback). GitLab guards with `(when pending ...)` to skip the pull when no comments were staged, avoiding a spurious round-trip.
+- **Post-submit sync**: `forge--review-submit` calls `forge--pull-topic` after posting, replacing locally-staged rows (with temporary IDs) with the server's canonical versions. Before calling `forge--pull-topic`, pending (temp-ID) rows are **deleted** from the DB so they are replaced cleanly by the server-assigned rows the pull inserts. GitHub always fires the pull (unconditionally). GitLab guards with `(when pending ...)` to skip the pull when no comments were staged, avoiding a spurious round-trip.
 - **Submit callback protocol**: all functions assigned to `forge--submit-post-function` must accept exactly two arguments `(repo post)`. DB-only staging callbacks (`forge-review--stage-comment`, `forge-review--save-comment-edit`) use `(_repo _post)` and ignore both. API-submitting callbacks are `cl-defmethod` generics specialised on the repo class.
 - **Diff overlays**: `forge--maybe-insert-review-threads-in-diff` is on `magit-refresh-buffer-hook`; it guards with `(derived-mode-p 'magit-diff-mode)` and clears stale overlays before re-placing.
 - **GitLab SHA fields**: `base_sha` = merge base (`forge-pullreq.base-sha`); `start_sha` = branch point (`forge-pullreq.base-rev`); `head_sha` = tip (`forge-pullreq.head-rev`). These are three different SHAs.
@@ -123,6 +132,7 @@ Do not use `forge-gitlab-repository--eieio-childp` for dispatch inside generic f
 - **GraphQL queries/mutations**: use the `forge-query` / `forge-mutate` macros from `forge-client.el`. These handle host inference, auth, and the `ghub` DSL. Inside `cl-defmethod` bodies, call `forge--query` directly (the function-level equivalent).
 - **REST**: use the `forge-rest` macro for normal topic operations (handles host inference). Inside `cl-defmethod` bodies, call `forge--rest` directly.
 - **Never call `ghub-request` directly** from forge methods — always go through `forge--rest` or `forge--query` so host inference works correctly.
+- **Review comment REST calls** use `rc` as the resource object: `(forge--rest rc "VERB" "/path/:slots" ...)`. This works because `forge-pullreq-review-comment` now extends `forge-object` and has `forge-get-parent` wired up, so `forge--format-resource` can resolve all path segments.
 
 ### Naming conventions
 
@@ -148,6 +158,7 @@ Do not use `forge-gitlab-repository--eieio-childp` for dispatch inside generic f
 - Slot access: `(oref obj slot)` to read, `(oset obj slot val)` to write.
 - DB insert: `(closql-insert (forge-db) obj t)` — the trailing `t` means "replace if exists".
 - DB lookup: `(closql-get (forge-db) id 'forge-CLASS)`.
+- DB delete: `(closql-delete obj)` — removes the row from the database.
 - Transactions: `(closql-with-transaction (forge-db) ...)` — used in bulk-insert paths (e.g. `forge--update-pullreq-review-comments`).
 - New columns added to an existing table via `ALTER TABLE` must be appended to the **end** of the slot list to preserve closql's positional INSERT order.
 
