@@ -755,7 +755,8 @@
 
 (cl-defmethod forge--review-submit ((_repo forge-gitlab-repository) pr)
   "POST each pending review comment for PR to GitLab individually."
-  (let* ((pending   (seq-filter (lambda (rc) (oref rc pending-p))
+  (let* ((repo      (forge-get-repository pr))
+         (pending   (seq-filter (lambda (rc) (oref rc pending-p))
                                 (oref pr review-comments)))
          (base-sha  (oref pr base-sha))
          (start-sha (oref pr base-rev))
@@ -774,7 +775,9 @@
                                           (and (oref rc new-line)
                                                (cons 'new_line (oref rc new-line)))
                                           (and (oref rc old-line)
-                                               (cons 'old_line (oref rc old-line)))))))))))
+                                               (cons 'old_line (oref rc old-line))))))))))
+    (when pending
+      (forge--pull-topic repo pr)))
 
 (cl-defmethod forge--review-post-reply ((_repo forge-gitlab-repository) pr opener text)
   "POST a reply to OPENER's discussion on GitLab."
