@@ -471,9 +471,11 @@ REPO is the `forge-repository' the pull request belongs to.")
   (when-let ((opener (magit-section-value-if 'review-comment)))
     (let* ((pr   (closql-get (forge-db) (oref opener pullreq) 'forge-pullreq))
            (repo (forge-get-repository pr)))
-      (forge--review-set-thread-resolved repo pr opener resolved)
-      (oset opener resolved-p resolved)
-      (forge-refresh-buffer))))
+      (forge--review-set-thread-resolved repo pr opener resolved
+        :callback  (lambda (&rest _)
+                     (oset opener resolved-p resolved)
+                     (forge-refresh-buffer))
+        :errorback (forge--post-submit-errorback)))))
 
 (defun forge-resolve-review-thread ()
   "Mark the review thread at point as resolved."
