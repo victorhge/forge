@@ -499,21 +499,9 @@ REPO is the `forge-repository' the pull request belongs to.")
   (interactive)
   (forge--set-review-thread-resolved nil))
 
-(defun forge--submit-add-single-review-comment ()
-  "Post a new inline comment directly to the forge API (no staging)."
-  (let* ((pr      forge--buffer-post-object)
-         (repo    (forge-get-repository pr))
-         (body    (forge--clear-comment-input (buffer-string)))
-         (result  (with-current-buffer forge--pre-post-buffer
-                    (forge--diff-line-number-at-point)))
-         (side    (if (and (consp result) (eq (car result) 'old)) 'old 'new))
-         (line    (if (and (consp result) (consp (car result)))
-                      (alist-get 'new result)
-                    (cdr result)))
-         (path    (with-current-buffer forge--pre-post-buffer
-                    (forge--diff-file-at-point))))
-    (forge--review-post-comment repo pr body path side line)
-    (forge-refresh-buffer forge--pre-post-buffer)))
+(cl-defgeneric forge--submit-add-single-review-comment (repo post)
+  "Post a single immediate inline comment from the current post buffer.
+REPO is the `forge-repository'; POST is the `forge-pullreq'.")
 
 (defun forge-add-single-review-comment ()
   "Add a single (non-batch) inline comment, posted directly to the API."

@@ -1264,7 +1264,8 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
                         (insert "Immediate comment")
                         (setq-local forge--buffer-post-object pr)
                         (setq-local forge--pre-post-buffer diff-buf)
-                        (forge--submit-add-single-review-comment)))))
+                        (forge-test--invoke-submit-fn
+                         #'forge--submit-add-single-review-comment repo pr)))))
           (should (equal (plist-get req :method) "POST"))
           (should (string-match-p "pulls/42/comments" (plist-get req :resource)))
           (should (equal (alist-get 'body (plist-get req :data)) "Immediate comment"))

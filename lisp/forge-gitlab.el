@@ -820,6 +820,20 @@
     (forge--review-post-reply repo pr opener body)
     (forge-refresh-buffer forge--pre-post-buffer)))
 
+(cl-defmethod forge--submit-add-single-review-comment
+  ((repo forge-gitlab-repository) (pr forge-pullreq))
+  (let* ((body   (forge--clear-comment-input (buffer-string)))
+         (result (with-current-buffer forge--pre-post-buffer
+                   (forge--diff-line-number-at-point)))
+         (side   (if (and (consp result) (eq (car result) 'old)) 'old 'new))
+         (line   (if (and (consp result) (consp (car result)))
+                     (alist-get 'new result)
+                   (cdr result)))
+         (path   (with-current-buffer forge--pre-post-buffer
+                   (forge--diff-file-at-point))))
+    (forge--review-post-comment repo pr body path side line)
+    (forge-refresh-buffer forge--pre-post-buffer)))
+
 ;;; _
 ;; Local Variables:
 ;; read-symbol-shorthands: (
