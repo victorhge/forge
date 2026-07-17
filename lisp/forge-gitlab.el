@@ -654,8 +654,9 @@
     :query query :payload payload :headers headers
     :silent silent :unpaginate unpaginate
     :noerror noerror :reader reader
-    :callback callback
-    :errorback (or errorback (and callback t))))
+    :callback (and (not forge--rest-synchronous) callback)
+    :errorback (and (not forge--rest-synchronous)
+                    (or errorback (and callback t)))))
 
 (cl-defun forge--glab-put (obj resource
                                &optional params
@@ -671,8 +672,9 @@
     :query query :payload payload :headers headers
     :silent silent :unpaginate unpaginate
     :noerror noerror :reader reader
-    :callback callback
-    :errorback (or errorback (and callback t))))
+    :callback (and (not forge--rest-synchronous) callback)
+    :errorback (and (not forge--rest-synchronous)
+                    (or errorback (and callback t)))))
 
 (cl-defun forge--glab-post (obj resource
                                 &optional params
@@ -688,8 +690,9 @@
     :query query :payload payload :headers headers
     :silent silent :unpaginate unpaginate
     :noerror noerror :reader reader
-    :callback callback
-    :errorback (or errorback (and callback t))))
+    :callback (and (not forge--rest-synchronous) callback)
+    :errorback (and (not forge--rest-synchronous)
+                    (or errorback (and callback t)))))
 
 (cl-defun forge--glab-delete (obj resource
                                   &optional params
@@ -705,8 +708,9 @@
     :query query :payload payload :headers headers
     :silent silent :unpaginate unpaginate
     :noerror noerror :reader reader
-    :callback callback
-    :errorback (or errorback (and callback t))))
+    :callback (and (not forge--rest-synchronous) callback)
+    :errorback (and (not forge--rest-synchronous)
+                    (or errorback (and callback t)))))
 
 ;;; Review – fetch / mapping
 

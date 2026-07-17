@@ -24,6 +24,18 @@
 
 (require 'forge)
 
+;;; Synchronous-mode switches (used by integration tests)
+
+(defvar forge--rest-synchronous nil
+  "When non-nil, `forge--rest' and `forge--glab-*' make synchronous requests.
+Suppresses :callback/:errorback so ghub-request uses url-retrieve-synchronously.
+Bind to t in integration tests so async review methods block until complete.")
+
+(defvar forge--query-synchronous nil
+  "When non-nil, `forge--query' makes synchronous GraphQL requests.
+Suppresses :callback/:errorback and sets :synchronous t in ghub-query.
+Bind to t in integration tests alongside `forge--rest-synchronous'.")
+
 ;;; GraphQL
 
 (cl-defun forge--query ( obj-or-host query variables
@@ -32,8 +44,11 @@
   (pcase-let ((`(,host ,forge) (forge--host-arguments obj-or-host)))
     (ghub-query query variables
       :auth 'forge :host host :forge forge
-      :callback callback :errorback errorback :noerror noerror
-      :narrow narrow :until until :synchronous synchronous)))
+      :callback  (and (not forge--query-synchronous) callback)
+      :errorback (and (not forge--query-synchronous) errorback)
+      :noerror noerror
+      :narrow narrow :until until
+      :synchronous (or synchronous forge--query-synchronous))))
 
 (cl-defmacro forge-query ( obj-or-host query variables
                            &key callback errorback noerror narrow until)
@@ -72,7 +87,9 @@
         resource)
       params
       :auth 'forge :host host :forge forge
-      :callback callback :errorback errorback :noerror noerror
+      :callback  (and (not forge--rest-synchronous) callback)
+      :errorback (and (not forge--rest-synchronous) errorback)
+      :noerror noerror
       :unpaginate unpaginate)))
 
 (cl-defmacro forge-rest ( obj-or-host method resource &optional params
