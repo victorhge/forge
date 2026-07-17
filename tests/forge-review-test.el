@@ -1901,6 +1901,13 @@ Regression: when-let* on (comments ()) short-circuited the clear call."
         (should-not (cl-some (lambda (o) (overlay-get o 'forge-review-comment))
                              (overlays-in (point-min) (point-max))))))))
 
+(defun forge-test--make-section-in (buf)
+  "Return a magit-section whose start marker points into BUF."
+  (let* ((marker (with-current-buffer buf (copy-marker (point-min))))
+         (s (magit-section)))
+    (oset s start marker)
+    s))
+
 (ert-deftest forge-review-display-buffer-topic-propagated-to-diff-buffer ()
   "forge--propagate-buffer-topic copies forge-buffer-topic from the originating
 buffer into a new magit-diff-mode buffer via magit-previous-section."
@@ -1913,20 +1920,46 @@ buffer into a new magit-diff-mode buffer via magit-previous-section."
               (with-current-buffer src-buf
                 (insert "topic content\n")
                 (setq-local forge-buffer-topic pr))
-              ;; Build a minimal section whose start marker points into src-buf.
-              (let* ((marker (with-current-buffer src-buf
-                               (copy-marker (point-min))))
-                     (src-section (let ((s (magit-section)))
-                                    (oset s start marker)
-                                    s)))
-                ;; Simulate a new magit-diff-mode buffer created from src-buf.
-                (with-temp-buffer
-                  (magit-diff-mode)
-                  (setq-local magit-previous-section src-section)
-                  (forge--propagate-buffer-topic)
-                  (should (eq forge-buffer-topic pr))
-                  (should (eq (forge-current-pullreq) pr)))))
+              (with-temp-buffer
+                (magit-diff-mode)
+                (setq-local magit-previous-section
+                            (forge-test--make-section-in src-buf))
+                (forge--propagate-buffer-topic)
+                (should (eq forge-buffer-topic pr))
+                (should (eq (forge-current-pullreq) pr))))
           (kill-buffer src-buf))))))
+
+(ert-deftest forge-review-display-buffer-topic-propagated-transitively ()
+  "forge--propagate-buffer-topic walks the magit-previous-section chain
+transitively so a revision buffer opened from an intermediate log/diff
+buffer still inherits the topic from a forge topic buffer further up."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo)))
+      ;; topic-buf: forge topic buffer with forge-buffer-topic set
+      ;; mid-buf:   intermediate magit buffer (log/diff), no forge-buffer-topic,
+      ;;            but its magit-previous-section points into topic-buf
+      ;; rev-buf:   revision buffer whose magit-previous-section points into mid-buf
+      (let ((topic-buf (generate-new-buffer " *forge-prop-topic*"))
+            (mid-buf   (generate-new-buffer " *forge-prop-mid*")))
+        (unwind-protect
+            (progn
+              (with-current-buffer topic-buf
+                (insert "topic\n")
+                (setq-local forge-buffer-topic pr))
+              (with-current-buffer mid-buf
+                (insert "mid\n")
+                (setq-local magit-previous-section
+                            (forge-test--make-section-in topic-buf)))
+              (with-temp-buffer
+                (magit-diff-mode)
+                (setq-local magit-previous-section
+                            (forge-test--make-section-in mid-buf))
+                (forge--propagate-buffer-topic)
+                (should (eq forge-buffer-topic pr))
+                (should (eq (forge-current-pullreq) pr))))
+          (kill-buffer topic-buf)
+          (kill-buffer mid-buf))))))
 
 ;;; Thread navigation
 
