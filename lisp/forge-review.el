@@ -66,6 +66,9 @@
 (cl-defmethod forge-get-repository ((rc forge-pullreq-review-comment))
   (forge-get-repository (forge-get-parent rc)))
 
+(cl-defmethod forge--format ((rc forge-pullreq-review-comment) slot &optional spec)
+  (forge--format (forge-get-parent rc) slot spec))
+
 ;;; Fetch / Mapping – generics (methods live in forge-github.el / forge-gitlab.el)
 
 (cl-defgeneric forge--update-pullreq-review-comments (repo pr threads)
@@ -405,6 +408,7 @@ Clears any existing overlays first, then places fresh ones."
                    :number       0
                    :pullreq      (oref pr id)
                    :new-path     (and result (not (eq (car result) 'old)) path)
+                   :old-path     (and result (eq (car result) 'old) path)
                    :new-line     (cond (context-p (alist-get 'new result))
                                        ((eq (car result) 'new) (cdr result)))
                    :old-line     (cond (context-p (alist-get 'old result))

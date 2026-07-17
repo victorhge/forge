@@ -1045,10 +1045,10 @@
                       (oref topic review-comments))))
 
 (defun forge--github-flush-pending-review-comments (topic)
-  "Clear pending-p on all pending review-comment rows of TOPIC."
+  "Delete all pending review-comment rows of TOPIC from the DB."
   (dolist (rc (seq-filter (lambda (rc) (oref rc pending-p))
                           (oref topic review-comments)))
-    (oset rc pending-p nil)))
+    (closql-delete rc)))
 
 (cl-defmethod forge--submit-approve-pullreq
   ((_repo forge-github-repository)

@@ -992,7 +992,7 @@ Regression: the predicate previously required ch=?+ so context lines were never 
       (should-not (closql-get (forge-db) "rc-1" 'forge-pullreq-review-comment)))))
 
 (ert-deftest forge-review-write-pending-cleared-after-submit ()
-  "After forge--review-submit, pending-p becomes nil on all submitted rows."
+  "After forge--review-submit, pending rows are deleted from the DB."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
@@ -1006,8 +1006,7 @@ Regression: the predicate previously required ch=?+ so context lines were never 
         (cl-letf (((symbol-function 'forge--rest) #'ignore))
           (forge--review-submit repo pr)))
       (dolist (id '("rc-1" "rc-2"))
-        (let ((fetched (closql-get (forge-db) id 'forge-pullreq-review-comment)))
-          (should (null (oref fetched pending-p))))))))
+        (should-not (closql-get (forge-db) id 'forge-pullreq-review-comment))))))
 
 (ert-deftest forge-review-write-github-unresolve-mutation ()
   "forge--review-set-thread-resolved with nil calls unresolveReviewThread mutation."
@@ -1391,7 +1390,7 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
           (should (equal (alist-get 'body c) "Check this")))))))
 
 (ert-deftest forge-review-write-github-flush-pending-clears-flag ()
-  "`forge--github-flush-pending-review-comments' sets pending-p nil on all rows."
+  "`forge--github-flush-pending-review-comments' deletes all pending rows."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
@@ -1402,9 +1401,8 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
         (closql-insert (forge-db) rc t))
       (forge--github-flush-pending-review-comments pr)
       (dolist (id '("rc-1" "rc-2"))
-        (should (null (oref (closql-get (forge-db) id
-                                        'forge-pullreq-review-comment)
-                            pending-p)))))))
+        (should-not (closql-get (forge-db) id
+                                'forge-pullreq-review-comment))))))
 
 (ert-deftest forge-review-write-gitlab-post-comment-calls-api ()
   "`forge--review-post-comment' on a GitLab repo posts to the discussions endpoint."

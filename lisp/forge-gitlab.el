@@ -777,6 +777,8 @@
                                           (and (oref rc old-line)
                                                (cons 'old_line (oref rc old-line)))))))))
     (when pending
+      (dolist (rc pending)
+        (closql-delete rc))
       (forge--pull-topic repo pr))))
 
 (cl-defmethod forge--review-post-reply ((_repo forge-gitlab-repository) pr opener text)
