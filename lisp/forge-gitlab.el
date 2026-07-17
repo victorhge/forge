@@ -775,9 +775,9 @@
                                           (and (oref rc new-line)
                                                (cons 'new_line (oref rc new-line)))
                                           (and (oref rc old-line)
-                                               (cons 'old_line (oref rc old-line))))))))))
+                                               (cons 'old_line (oref rc old-line)))))))))
     (when pending
-      (forge--pull-topic repo pr)))
+      (forge--pull-topic repo pr))))
 
 (cl-defmethod forge--review-post-reply ((_repo forge-gitlab-repository) pr opener text)
   "POST a reply to OPENER's discussion on GitLab."

@@ -218,6 +218,16 @@ Relies on the fake repo subclasses recording into `forge-test--last-request'."
      ,@body
      (nreverse forge-test--all-requests)))
 
+(defmacro forge-test--capture-pull-topic (&rest body)
+  "Execute BODY; return t if `forge--pull-topic' was called, nil otherwise.
+Stubs `forge--pull-topic' as a no-op recorder."
+  (declare (indent 0))
+  `(let ((called nil))
+     (cl-letf (((symbol-function 'forge--pull-topic)
+                (lambda (&rest _) (setq called t))))
+       ,@body)
+     called))
+
 (defun forge-test--make-repo ()
   "Insert and return a minimal forge-test-github-repository into the current DB."
   (let* ((repo (forge-test-github-repository
@@ -289,6 +299,61 @@ OVERRIDES is a plist that replaces individual slots."
                 :reactions     nil
                 :pending-p     nil)
           overrides)))
+
+(defun forge-test--make-real-github-repo ()
+  "Insert and return a plain forge-github-repository (not the test subclass).
+Use in tests that need to dispatch to the REAL forge--review-submit method."
+  (let* ((repo (forge-github-repository
+                :id       forge-test--repo-id
+                :forge-id "123"
+                :forge    "github.com"
+                :owner    "alice"
+                :name     "myrepo"
+                :apihost  "api.github.com"
+                :githost  "github.com")))
+    (oset repo condition :tracked)
+    (closql-insert (forge-db) repo t)
+    repo))
+
+(defun forge-test--make-real-gitlab-repo ()
+  "Insert and return a plain forge-gitlab-repository (not the test subclass).
+Use in tests that need to dispatch to the REAL forge--review-submit method."
+  (let* ((repo (forge-gitlab-repository
+                :id       forge-test--gl-repo-id
+                :forge-id "456"
+                :forge    "gitlab.com"
+                :owner    "alice"
+                :name     "proj"
+                :apihost  "gitlab.com/api/v4"
+                :githost  "gitlab.com")))
+    (oset repo condition :tracked)
+    (closql-insert (forge-db) repo t)
+    repo))
+
+(defun forge-test--make-gl-pullreq (repo)
+  "Insert and return a minimal forge-pullreq under REPO using the GitLab PR id."
+  (let* ((pr (forge-pullreq
+              :id         forge-test--gl-pr-id
+              :repository (oref repo id)
+              :number     42
+              :state      'open
+              :author     "bob"
+              :title      "Add widget"
+              :base-ref   "main"
+              :base-rev   "abc000"
+              :head-ref   "feature"
+              :head-rev   "def999"
+              :body       "")))
+    (closql-insert (forge-db) pr t)
+    pr))
+
+(defun forge-test--make-gl-review-comment (pullreq &rest overrides)
+  "Return a `forge-pullreq-review-comment' for a GitLab PR with sane defaults.
+OVERRIDES is a plist that replaces individual slots."
+  (apply #'forge-test--make-review-comment pullreq
+         (append (list :id "gl-rc-1" :their-id "gl-node-1"
+                       :discussion-id "gl-thread-1" :database-id 201)
+                 overrides)))
 
 (defun forge-test--invoke-submit-fn (fn repo post)
   "Simulate `forge-post-submit' by calling FN with REPO and POST.
@@ -1357,6 +1422,62 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
         (let ((pos (alist-get 'position (plist-get req :data))))
           (should (= (alist-get 'new_line pos) 5))
           (should (null (alist-get 'old_line pos))))))))
+
+;;; Write operations — forge--pull-topic call verification
+;;
+;; The following three tests verify that `forge--review-submit' calls
+;; `forge--pull-topic' after posting.  They exercise the REAL implementations
+;; from forge-github.el / forge-gitlab.el (not the test-class stubs) by:
+;;  1. Inserting a plain forge-github/gitlab-repository into the DB so that
+;;     `forge-get-repository pr' returns the real class and method dispatch
+;;     selects the production implementation.
+;;  2. Stubbing `forge--rest' so network calls never happen.  The GitHub stub
+;;     also calls its `:callback' argument synchronously, because the
+;;     GitHub `forge--review-submit' invokes `forge--pull-topic' inside
+;;     that callback.
+;;  3. Stubbing `forge--pull-topic' with `forge-test--capture-pull-topic'
+;;     to record whether it was called.
+
+(ert-deftest forge-review-write-github-submit-calls-pull-topic ()
+  "`forge--review-submit' on GitHub calls `forge--pull-topic' after posting."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-real-github-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (rc   (forge-test--make-review-comment pr :body "A comment")))
+      (oset rc pending-p t)
+      (closql-insert (forge-db) rc t)
+      (let ((called
+             (forge-test--capture-pull-topic
+               (cl-letf (((symbol-function 'forge--rest)
+                          (lambda (&rest args)
+                            (let ((cb (cadr (memq :callback args))))
+                              (when cb (funcall cb nil nil nil))))))
+                 (forge--review-submit repo pr)))))
+        (should called)))))
+
+(ert-deftest forge-review-write-gitlab-submit-calls-pull-topic ()
+  "`forge--review-submit' on GitLab calls `forge--pull-topic' after posting."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-real-gitlab-repo))
+           (pr   (forge-test--make-gl-pullreq repo))
+           (rc   (forge-test--make-gl-review-comment pr :body "GL comment")))
+      (oset rc pending-p t)
+      (closql-insert (forge-db) rc t)
+      (let ((called
+             (forge-test--capture-pull-topic
+               (cl-letf (((symbol-function 'forge--rest) #'ignore))
+                 (forge--review-submit repo pr)))))
+        (should called)))))
+
+(ert-deftest forge-review-write-gitlab-submit-no-pull-when-no-pending ()
+  "`forge--review-submit' on GitLab does not call `forge--pull-topic' when
+there are no pending comments — avoids spurious API round-trips."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-real-gitlab-repo))
+           (pr   (forge-test--make-gl-pullreq repo)))
+      (let ((called (forge-test--capture-pull-topic
+                      (forge--review-submit repo pr))))
+        (should-not called)))))
 
 ;;; forge-post-submit regression
 ;;
