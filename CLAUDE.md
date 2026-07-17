@@ -73,19 +73,23 @@ closql-object
     │   │   └── forge-revnote           (forge-revnote.el)
     │   ├── forge-issue-post            (forge-issue.el)
     │   ├── forge-pullreq-post          (forge-pullreq.el)
+    │   │   └── forge-pullreq-review-comment  (forge-review.el) — inline diff comment
     │   ├── forge-discussion-post       (forge-discussion.el)
     │   ├── forge-discussion-reply      (forge-discussion.el)
     │   └── forge-note                  (forge-post.el)
     ├── forge-notification              (forge-notify.el)
-    └── forge-pullreq-review-comment    (forge-review.el) — not a post; inline diff comment
 ```
 
-`forge-pullreq-review-comment` extends `forge-object` directly (not `forge-post`) because it has different slot semantics and is not part of the issue/PR conversation thread. It participates in the standard forge object hierarchy via:
-- `forge-get-parent` → returns the owning `forge-pullreq`
-- `forge-get-repository` → delegates to `forge-get-parent`
-- `forge--format` → delegates to `forge-get-parent`
+`forge-pullreq-review-comment` extends `forge-pullreq-post` (and thus `forge-post`). It inherits data slots `id, pullreq, number, author, created, updated, body, edits, reactions` and all of the post/pullreq method chain:
+- `forge-get-pullreq` → reads `(oref rc pullreq)`, returns the owning `forge-pullreq`
+- `forge-get-topic` → delegates to `forge-get-pullreq`
+- `forge-get-parent` → delegates to `forge-get-topic`
+- `forge-get-repository` → delegates to `forge-get-pullreq`
+- `forge--format` → delegates to `forge-get-topic`
 
-This wiring means `(forge--rest rc "VERB" "/path/:with/:slots")` resolves all URL segments correctly: `:number` → `rc.number` (comment/note ID), `:topic` → `pr.number` (MR iid, via parent walk since `rc` is not a `forge-topic`), `:project`/`:owner`/`:repo` → from the repository.
+It declares only its own unique slots: `their-id, discussion-id, new-path, old-path, new-line, old-line, diff-hunk, outdated-p, resolved-p, reply-to, review-state, pending-p`.
+
+The inherited + own slot order determines the DB column order for closql's positional INSERT (inherited slots come first). `(forge--rest rc "VERB" "/path/:slots")` resolves correctly: `:number` → `rc.number` (comment/note ID), `:topic` → `pr.number` (MR iid, via parent walk since `rc` is not a `forge-topic`), `:project`/`:owner`/`:repo` → from the repository.
 
 ### Repository identity and tracking states
 
