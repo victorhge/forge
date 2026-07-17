@@ -401,6 +401,11 @@ Clears any existing overlays first, then places fresh ones."
                                        ((eq (car result) 'new) (cdr result)))
                    :old-line     (cond (context-p (alist-get 'old result))
                                        ((eq (car result) 'old) (cdr result)))
+                   :diff-hunk    nil
+                   :outdated-p   nil
+                   :resolved-p   nil
+                   :reply-to     nil
+                   :review-state nil
                    :body         body
                    :pending-p    t)))
     (closql-insert (forge-db) rc t)
