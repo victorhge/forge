@@ -1327,6 +1327,21 @@ This mode itself is never used directly."
 
 (defvar-local forge-buffer-topic nil)
 
+(defun forge--propagate-buffer-topic ()
+  "Copy `forge-buffer-topic' from the originating buffer into this one.
+Runs on `magit-setup-buffer-hook' so that diff/revision buffers opened
+from a forge topic buffer inherit the topic context."
+  (when (and (derived-mode-p 'magit-diff-mode)
+             (not forge-buffer-topic)
+             (magit-section-p magit-previous-section))
+    (when-let* ((src   (marker-buffer
+                        (oref magit-previous-section start)))
+                (topic (buffer-local-value 'forge-buffer-topic src)))
+      (when (forge-topic-p topic)
+        (setq forge-buffer-topic topic)))))
+
+(add-hook 'magit-setup-buffer-hook #'forge--propagate-buffer-topic)
+
 (defun forge-topic-setup-buffer (topic)
   (let* ((repo (forge-get-repository topic))
          (name (format "*forge: %s %s*" (oref repo slug) (oref topic slug)))
