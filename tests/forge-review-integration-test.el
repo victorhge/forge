@@ -270,7 +270,7 @@ Deletes replies before the opener so GitLab permits opener deletion."
              (let ((old (oref-default 'forge-database singleton)))
                (unless (eq old eieio--unbound) (emacsql-close old))))
            (oset-default 'forge-database singleton eieio--unbound)
-           (forge--db-create-review-comment-table (forge-db))
+           (forge-db)
            ,@body)
        (ignore-errors
          (let ((old (oref-default 'forge-database singleton)))
@@ -421,7 +421,7 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
                                                               (number-to-string opener-db-id))
                               :their-id     (number-to-string opener-db-id)
                               :discussion-id "placeholder"
-                              :database-id  opener-db-id
+                              :number  opener-db-id
                               :pullreq      (oref pr-obj id)
                               :new-path     path
                               :new-line     1
@@ -454,7 +454,7 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
                                                               (number-to-string comment-id))
                               :their-id     (number-to-string comment-id)
                               :discussion-id "placeholder"
-                              :database-id  comment-id
+                              :number  comment-id
                               :pullreq      (oref pr-obj id)
                               :new-path     path
                               :new-line     1
@@ -523,7 +523,7 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
                     :id           (forge--object-id (oref pr-obj id) "pending-1")
                     :their-id     nil
                     :discussion-id nil
-                    :database-id  0
+                    :number  0
                     :pullreq      (oref pr-obj id)
                     :new-path     path
                     :new-line     1
@@ -533,7 +533,7 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
                     :id           (forge--object-id (oref pr-obj id) "pending-2")
                     :their-id     nil
                     :discussion-id nil
-                    :database-id  0
+                    :number  0
                     :pullreq      (oref pr-obj id)
                     :new-path     path
                     :new-line     2
@@ -867,7 +867,7 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
                                                           (number-to-string note-id))
                           :their-id     (number-to-string note-id)
                           :discussion-id disc-id
-                          :database-id  note-id
+                          :number  note-id
                           :pullreq      (oref pr-obj id)
                           :new-path     path
                           :new-line     1
@@ -904,7 +904,7 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
                                                           (number-to-string note-id))
                           :their-id     (number-to-string note-id)
                           :discussion-id disc-id
-                          :database-id  note-id
+                          :number  note-id
                           :pullreq      (oref pr-obj id)
                           :new-path     path
                           :new-line     1
@@ -935,7 +935,7 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
                                                           (number-to-string note-id))
                           :their-id     (number-to-string note-id)
                           :discussion-id disc-id
-                          :database-id  note-id
+                          :number  note-id
                           :pullreq      (oref pr-obj id)
                           :new-path     path
                           :new-line     1
@@ -992,7 +992,7 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
                     :id           (forge--object-id (oref pr-obj id) "gl-pending-1")
                     :their-id     nil
                     :discussion-id nil
-                    :database-id  0
+                    :number  0
                     :pullreq      (oref pr-obj id)
                     :new-path     path
                     :old-path     path
@@ -1004,7 +1004,7 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
                     :id           (forge--object-id (oref pr-obj id) "gl-pending-2")
                     :their-id     nil
                     :discussion-id nil
-                    :database-id  0
+                    :number  0
                     :pullreq      (oref pr-obj id)
                     :new-path     path
                     :old-path     path

@@ -28,9 +28,9 @@ The real `forge-database-file' is never touched."
                (unless (eq old eieio--unbound)
                  (emacsql-close old))))
            (oset-default 'forge-database singleton eieio--unbound)
-           ;; Open the DB (creates v15 schema), then add the review-comment table.
-           (let ((db (forge-db)))
-             (forge--db-create-review-comment-table db))
+           ;; Open the DB; closql--db-create-schema creates all tables including
+           ;; pullreq-review-comment (v16 schema).
+           (forge-db)
            ,@body)
        (ignore-errors
          (let ((old (oref-default 'forge-database singleton)))
@@ -89,7 +89,7 @@ hitting the network.  Use `forge-test--make-repo' to create instances.")
   (forge-test--record-rest
    "POST"
    (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/comments")
-   (list (cons 'body text) (cons 'in_reply_to (oref opener database-id)))))
+   (list (cons 'body text) (cons 'in_reply_to (oref opener number)))))
 
 ;; Note: forge--submit-review-reply and forge--submit-add-single-review-comment
 ;; are NOT stubbed here.  They inherit the forge-github-repository cl-defmethod
@@ -107,7 +107,7 @@ hitting the network.  Use `forge-test--make-repo' to create instances.")
   (forge-test--record-rest
    "DELETE"
    (forge--format-resource
-    pr (format "/repos/:owner/:repo/pulls/comments/%d" (oref rc database-id)))
+    pr (format "/repos/:owner/:repo/pulls/comments/%d" (oref rc number)))
    nil))
 
 (cl-defmethod forge--review-post-comment
@@ -151,7 +151,7 @@ hitting the network.  Use `forge-test--make-gl-repo' to create instances.")
    "DELETE"
    (forge--format-resource
     pr (format "/projects/:project/merge_requests/:number/notes/%d"
-               (oref rc database-id)))
+               (oref rc number)))
    nil))
 
 (cl-defmethod forge--review-post-comment
@@ -251,7 +251,7 @@ OVERRIDES is a plist that replaces individual slots."
           (list :id            "rc-1"
                 :their-id      "gh-node-1"
                 :discussion-id "thread-1"
-                :database-id   101
+                :number        101
                 :pullreq       (oref pullreq id)
                 :new-path      "src/foo.el"
                 :old-path      nil
@@ -293,7 +293,7 @@ OVERRIDES is a plist that replaces individual slots."
 OVERRIDES is a plist that replaces individual slots."
   (apply #'forge-test--make-review-comment pullreq
          (append (list :id "gl-rc-1" :their-id "gl-node-1"
-                       :discussion-id "gl-thread-1" :database-id 201)
+                       :discussion-id "gl-thread-1" :number 201)
                  overrides)))
 
 (defun forge-test--invoke-submit-fn (fn repo post)
@@ -326,7 +326,7 @@ no-op so `forge-post-submit' can be called without a real file."
       (let ((fetched (closql-get (forge-db) "rc-1" 'forge-pullreq-review-comment)))
         (should (equal (oref fetched their-id)      "gh-node-1"))
         (should (equal (oref fetched discussion-id) "thread-1"))
-        (should (equal (oref fetched database-id)   101))
+        (should (equal (oref fetched number)         101))
         (should (equal (oref fetched new-path)      "src/foo.el"))
         (should (equal (oref fetched old-path)      nil))
         (should (equal (oref fetched new-line)      10))
@@ -374,7 +374,7 @@ no-op so `forge-post-submit' can be called without a real file."
         (should (eq (oref fetched pending-p) t))))))
 
 (ert-deftest forge-review-data-model-schema-table-created ()
-  "forge--db-create-review-comment-table creates the review-comment table."
+  "forge-db creates the review-comment table via closql--db-create-schema."
   (forge-test--with-db
     (let ((db (forge-db)))
       ;; Table was created by forge-test--with-db setup; verify it exists.
@@ -910,12 +910,12 @@ Regression: the predicate previously required ch=?+ so context lines were never 
          calls)))))
 
 (ert-deftest forge-review-write-github-reply-uses-in-reply-to ()
-  "Replying to a GitHub comment sends in_reply_to = database-id."
+  "Replying to a GitHub comment sends in_reply_to = number."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
            (opener (forge-test--make-review-comment pr
-                     :id "rc-opener" :database-id 999 :discussion-id "t1")))
+                     :id "rc-opener" :number 999 :discussion-id "t1")))
       (closql-insert (forge-db) opener t)
       (let ((req (forge-test--capture-request
                    (forge--review-post-reply repo pr opener "Reply text"))))
@@ -1074,7 +1074,7 @@ Regression: the predicate previously required ch=?+ so context lines were never 
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
            (rc   (forge-test--make-review-comment pr
-                   :database-id 777 :pending-p nil)))
+                   :number 777 :pending-p nil)))
       (closql-insert (forge-db) rc t)
       (let ((req (forge-test--capture-request
                    (forge-discard-review-comment rc))))
@@ -1099,7 +1099,7 @@ Regression: the predicate previously required ch=?+ so context lines were never 
   (forge-test--with-db
     (let* ((repo (forge-test--make-gl-repo))
            (pr   (forge-test--make-pullreq repo))
-           (rc   (forge-test--make-review-comment pr :database-id 42 :pending-p nil)))
+           (rc   (forge-test--make-review-comment pr :number 42 :pending-p nil)))
       (closql-insert (forge-db) rc t)
       (let ((req (forge-test--capture-request
                    (forge-discard-review-comment rc))))
@@ -1345,7 +1345,7 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
     (let* ((repo   (forge-test--make-repo))
            (pr     (forge-test--make-pullreq repo))
            (opener (forge-test--make-review-comment pr
-                     :id "rc-opener" :database-id 999 :discussion-id "t1")))
+                     :id "rc-opener" :number 999 :discussion-id "t1")))
       (closql-insert (forge-db) opener t)
       (let ((req (forge-test--capture-request
                    (with-temp-buffer
@@ -1516,7 +1516,7 @@ signal wrong-number-of-arguments."
     (let* ((repo   (forge-test--make-repo))
            (pr     (forge-test--make-pullreq repo))
            (opener (forge-test--make-review-comment pr
-                     :id "rc-opener" :database-id 999 :discussion-id "t1")))
+                     :id "rc-opener" :number 999 :discussion-id "t1")))
       (closql-insert (forge-db) opener t)
       ;; forge-get-repository is called with opener (forge-pullreq-review-comment),
       ;; which has no method; stub it to return the test repo.
@@ -1713,7 +1713,7 @@ signal wrong-number-of-arguments."
     ;; Manufacture a review-comment object and place its overlay.
     (let* ((rc (forge-pullreq-review-comment
                 :id "rc-test" :their-id "x" :discussion-id "t"
-                :database-id 0 :pullreq "pr-1"
+                :number 0 :pullreq "pr-1"
                 :new-path "src/foo.el" :old-path nil
                 :new-line 9 :old-line nil
                 :author "alice" :body "Test comment"
@@ -1743,7 +1743,7 @@ signal wrong-number-of-arguments."
   (apply #'forge-pullreq-review-comment
          (append
           (list :id "h-test" :their-id "x" :discussion-id "t"
-                :database-id 0 :pullreq "pr"
+                :number 0 :pullreq "pr"
                 :new-path "src/foo.el" :old-path nil
                 :new-line nil :old-line nil
                 :diff-hunk nil :outdated-p nil :resolved-p nil

@@ -1397,7 +1397,7 @@
                     :id           rc-id
                     :their-id     .id
                     :discussion-id thread-id
-                    :database-id  .databaseId
+                    :number       .databaseId
                     :pullreq      pr-id
                     :new-path     (unless left-side path)
                     :old-path     (when left-side path)
@@ -1438,7 +1438,7 @@
   (forge--rest pr "POST"
     "/repos/:owner/:repo/pulls/:number/comments"
     (list (cons 'body         text)
-          (cons 'in_reply_to  (oref opener database-id)))))
+          (cons 'in_reply_to  (oref opener number)))))
 
 (cl-defmethod forge--review-set-thread-resolved
   ((_repo forge-github-repository) pr opener resolved)
@@ -1451,7 +1451,7 @@
 (cl-defmethod forge--review-delete-comment ((_repo forge-github-repository) pr rc)
   "DELETE a submitted review comment RC from GitHub."
   (forge--rest pr "DELETE"
-    (format "/repos/:owner/:repo/pulls/comments/%d" (oref rc database-id))
+    (format "/repos/:owner/:repo/pulls/comments/%d" (oref rc number))
     nil))
 
 (cl-defmethod forge--review-post-comment ((_repo forge-github-repository) pr body path side line)

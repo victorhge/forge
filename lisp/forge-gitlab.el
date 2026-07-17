@@ -731,7 +731,7 @@
                     :id           rc-id
                     :their-id     (number-to-string .id)
                     :discussion-id disc-id
-                    :database-id  .id
+                    :number       .id
                     :pullreq      pr-id
                     :new-path     .position.new_path
                     :old-path     .position.old_path
@@ -797,7 +797,7 @@
 (cl-defmethod forge--review-delete-comment ((_repo forge-gitlab-repository) pr rc)
   "DELETE a submitted review comment RC from GitLab."
   (forge--rest pr "DELETE"
-    (format "/projects/:project/merge_requests/:number/notes/%d" (oref rc database-id))
+    (format "/projects/:project/merge_requests/:number/notes/%d" (oref rc number))
     nil))
 
 (cl-defmethod forge--review-post-comment ((_repo forge-gitlab-repository) pr body path side line)
