@@ -13,7 +13,7 @@ make clean       # Remove compiled .elc files and generated autoloads
 
 Compilation requires dependencies on the load path. `default.mk` expects sibling directories (e.g., `../../magit/lisp`, `../../ghub/lisp`) relative to the `lisp/` directory, or set `LOAD_PATH` manually.
 
-`make test` runs the ERT suite in `tests/forge-review-test.el` (56 tests). It uses `package-initialize` to load dependencies from the user's installed ELPA — no path configuration needed. Requires `compat-31.x` (not `compat-30.x`) to satisfy `closql`'s `compat-call sort` usage.
+`make test` runs the ERT suite in `tests/forge-review-test.el` (87 tests). It uses `package-initialize` to load dependencies from the user's installed ELPA — no path configuration needed. Requires `compat-31.x` (not `compat-30.x`) to satisfy `closql`'s `compat-call sort` usage.
 
 ## Architecture
 
