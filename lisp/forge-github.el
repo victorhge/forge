@@ -1466,6 +1466,7 @@
 
 (cl-defmethod forge--submit-add-single-review-comment
   ((repo forge-github-repository) (pr forge-pullreq))
+  "Post a single immediate inline comment on GitHub."
   (let* ((body   (forge--clear-comment-input (buffer-string)))
          (result (with-current-buffer forge--pre-post-buffer
                    (forge--diff-line-number-at-point)))

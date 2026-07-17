@@ -822,6 +822,7 @@
 
 (cl-defmethod forge--submit-add-single-review-comment
   ((repo forge-gitlab-repository) (pr forge-pullreq))
+  "Post a single immediate inline comment on GitLab."
   (let* ((body   (forge--clear-comment-input (buffer-string)))
          (result (with-current-buffer forge--pre-post-buffer
                    (forge--diff-line-number-at-point)))
