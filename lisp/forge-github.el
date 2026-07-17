@@ -1457,11 +1457,11 @@
           (cons 'side      (if (eq side 'old) "LEFT" "RIGHT")))))
 
 (cl-defmethod forge--submit-review-reply
-  ((_repo forge-github-repository) (opener forge-pullreq-review-comment))
+  ((repo forge-github-repository) (opener forge-pullreq-review-comment))
   "Submit a reply to review comment OPENER on GitHub."
   (let* ((pr   (closql-get (forge-db) (oref opener pullreq) 'forge-pullreq))
          (body (forge--clear-comment-input (buffer-string))))
-    (forge--review-post-reply _repo pr opener body)
+    (forge--review-post-reply repo pr opener body)
     (forge-refresh-buffer forge--pre-post-buffer)))
 
 ;;; _

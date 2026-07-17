@@ -813,11 +813,11 @@
                                       (and (eq side 'old) (cons 'old_line line))))))))
 
 (cl-defmethod forge--submit-review-reply
-  ((_repo forge-gitlab-repository) (opener forge-pullreq-review-comment))
+  ((repo forge-gitlab-repository) (opener forge-pullreq-review-comment))
   "Submit a reply to review comment OPENER on GitLab."
   (let* ((pr   (closql-get (forge-db) (oref opener pullreq) 'forge-pullreq))
          (body (forge--clear-comment-input (buffer-string))))
-    (forge--review-post-reply _repo pr opener body)
+    (forge--review-post-reply repo pr opener body)
     (forge-refresh-buffer forge--pre-post-buffer)))
 
 ;;; _
