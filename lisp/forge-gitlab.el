@@ -758,56 +758,67 @@
 ;;; Review – write operations
 
 (cl-defmethod forge--review-submit ((_repo forge-gitlab-repository) pr)
-  "POST each pending review comment for PR to GitLab individually."
+  "POST each pending review comment for PR to GitLab, sequentially via callbacks."
   (let* ((repo      (forge-get-repository pr))
          (pending   (seq-filter (lambda (rc) (oref rc pending-p))
                                 (oref pr review-comments)))
          (base-sha  (oref pr base-sha))
          (start-sha (oref pr base-rev))
          (head-sha  (oref pr head-rev)))
-    (dolist (rc pending)
-      (forge--rest pr "POST"
-        "/projects/:project/merge_requests/:number/discussions"
-        (list (cons 'body     (oref rc body))
-              (cons 'position (delq nil
-                                    (list (cons 'base_sha  base-sha)
-                                          (cons 'start_sha start-sha)
-                                          (cons 'head_sha  head-sha)
-                                          (cons 'position_type "text")
-                                          (cons 'new_path  (oref rc new-path))
-                                          (cons 'old_path  (or (oref rc old-path) (oref rc new-path)))
-                                          (and (oref rc new-line)
-                                               (cons 'new_line (oref rc new-line)))
-                                          (and (oref rc old-line)
-                                               (cons 'old_line (oref rc old-line)))))))))
     (when pending
-      (dolist (rc pending)
-        (closql-delete rc))
-      (forge--pull-topic repo pr))))
+      (cl-labels ((post-next (remaining)
+                    (if (null remaining)
+                        (progn
+                          (dolist (rc pending) (closql-delete rc))
+                          (forge--pull-topic repo pr))
+                      (let ((rc (car remaining)))
+                        (forge--glab-post pr
+                          "/projects/:project/merge_requests/:number/discussions"
+                          (list (cons 'body     (oref rc body))
+                                (cons 'position (delq nil
+                                                      (list (cons 'base_sha  base-sha)
+                                                            (cons 'start_sha start-sha)
+                                                            (cons 'head_sha  head-sha)
+                                                            (cons 'position_type "text")
+                                                            (cons 'new_path  (oref rc new-path))
+                                                            (cons 'old_path  (or (oref rc old-path) (oref rc new-path)))
+                                                            (and (oref rc new-line)
+                                                                 (cons 'new_line (oref rc new-line)))
+                                                            (and (oref rc old-line)
+                                                                 (cons 'old_line (oref rc old-line)))))))
+                          :callback  (lambda (&rest _) (post-next (cdr remaining)))
+                          :errorback (forge--post-submit-errorback))))))
+        (post-next pending)))))
 
-(cl-defmethod forge--review-post-reply ((_repo forge-gitlab-repository) pr opener text)
+(cl-defmethod forge--review-post-reply
+  ((_repo forge-gitlab-repository) pr opener text &key callback errorback)
   "POST a reply to OPENER's discussion on GitLab."
-  (forge--rest pr "POST"
+  (forge--glab-post pr
     (format "/projects/:project/merge_requests/:number/discussions/%s/notes"
             (oref opener discussion-id))
-    (list (cons 'body text))))
+    (list (cons 'body text))
+    :callback callback :errorback errorback))
 
 (cl-defmethod forge--review-set-thread-resolved
-  ((_repo forge-gitlab-repository) pr opener resolved)
+  ((_repo forge-gitlab-repository) pr opener resolved &key callback errorback)
   "PUT resolved=RESOLVED for OPENER's discussion on GitLab."
-  (forge--rest pr "PUT"
+  (forge--glab-put pr
     (format "/projects/:project/merge_requests/:number/discussions/%s"
             (oref opener discussion-id))
-    (list (cons 'resolved (if resolved t :false)))))
+    (list (cons 'resolved (if resolved t :false)))
+    :callback callback :errorback errorback))
 
-(cl-defmethod forge--review-delete-comment ((_repo forge-gitlab-repository) _pr rc)
+(cl-defmethod forge--review-delete-comment
+  ((_repo forge-gitlab-repository) _pr rc &key callback errorback)
   "DELETE a submitted review comment RC from GitLab."
-  (forge--rest rc "DELETE"
-    "/projects/:project/merge_requests/:topic/notes/:number" nil))
+  (forge--glab-delete rc
+    "/projects/:project/merge_requests/:topic/notes/:number" nil
+    :callback callback :errorback errorback))
 
-(cl-defmethod forge--review-post-comment ((_repo forge-gitlab-repository) pr body path side line)
+(cl-defmethod forge--review-post-comment
+  ((_repo forge-gitlab-repository) pr body path side line &key callback errorback)
   "POST a single immediate inline comment at PATH SIDE LINE on GitLab."
-  (forge--rest pr "POST"
+  (forge--glab-post pr
     "/projects/:project/merge_requests/:number/discussions"
     (list (cons 'body body)
           (cons 'position (delq nil
@@ -818,15 +829,18 @@
                                       (cons 'new_path  path)
                                       (cons 'old_path  (or path ""))
                                       (and (eq side 'new) (cons 'new_line line))
-                                      (and (eq side 'old) (cons 'old_line line))))))))
+                                      (and (eq side 'old) (cons 'old_line line))))))
+    :callback callback :errorback errorback))
 
 (cl-defmethod forge--submit-add-review-reply
   ((repo forge-gitlab-repository) (opener forge-pullreq-review-comment))
   "Submit a reply to review comment OPENER on GitLab."
   (let* ((pr   (closql-get (forge-db) (oref opener pullreq) 'forge-pullreq))
-         (body (forge--clear-comment-input (buffer-string))))
-    (forge--review-post-reply repo pr opener body)
-    (forge-refresh-buffer forge--pre-post-buffer)))
+         (body (forge--clear-comment-input (buffer-string)))
+         (buf  forge--pre-post-buffer))
+    (forge--review-post-reply repo pr opener body
+      :callback  (lambda (&rest _) (forge-refresh-buffer buf))
+      :errorback (forge--post-submit-errorback))))
 
 (cl-defmethod forge--submit-add-single-review-comment
   ((repo forge-gitlab-repository) (pr forge-pullreq))
@@ -839,9 +853,11 @@
                      (alist-get 'new result)
                    (cdr result)))
          (path   (with-current-buffer forge--pre-post-buffer
-                   (forge--diff-file-at-point))))
-    (forge--review-post-comment repo pr body path side line)
-    (forge-refresh-buffer forge--pre-post-buffer)))
+                   (forge--diff-file-at-point)))
+         (buf    forge--pre-post-buffer))
+    (forge--review-post-comment repo pr body path side line
+      :callback  (lambda (&rest _) (forge-refresh-buffer buf))
+      :errorback (forge--post-submit-errorback))))
 
 ;;; _
 ;; Local Variables:

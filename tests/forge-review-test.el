@@ -928,12 +928,14 @@ Regression: the predicate previously required ch=?+ so context lines were never 
         (closql-insert (forge-db) rc t))
       (let ((calls (forge-test--capture-all-requests
                      (forge-test--capture-pull-topic
-                       (cl-letf (((symbol-function 'forge--rest)
-                                  (lambda (obj method resource &optional params &rest _)
+                       (cl-letf (((symbol-function 'forge--glab-post)
+                                  (lambda (obj resource &optional params &rest args)
                                     (forge-test--record-rest
-                                     method
+                                     "POST"
                                      (forge--format-resource obj resource)
-                                     params))))
+                                     params)
+                                    (let ((cb (cadr (memq :callback args))))
+                                      (when cb (funcall cb nil nil nil nil))))))
                          (forge--review-submit repo pr))))))
         (should (= (length calls) 2))
         (cl-every
@@ -1072,12 +1074,14 @@ Regression: the predicate previously required ch=?+ so context lines were never 
       (closql-insert (forge-db) rc t)
       (let ((calls (forge-test--capture-all-requests
                      (forge-test--capture-pull-topic
-                       (cl-letf (((symbol-function 'forge--rest)
-                                  (lambda (obj method resource &optional params &rest _)
+                       (cl-letf (((symbol-function 'forge--glab-post)
+                                  (lambda (obj resource &optional params &rest args)
                                     (forge-test--record-rest
-                                     method
+                                     "POST"
                                      (forge--format-resource obj resource)
-                                     params))))
+                                     params)
+                                    (let ((cb (cadr (memq :callback args))))
+                                      (when cb (funcall cb nil nil nil nil))))))
                          (forge--review-submit repo pr))))))
         (should (= (length calls) 1))
         (let ((pos (alist-get 'position (plist-get (car calls) :data))))
@@ -1096,12 +1100,14 @@ Regression: the predicate previously required ch=?+ so context lines were never 
       (closql-insert (forge-db) rc t)
       (let* ((calls (forge-test--capture-all-requests
                       (forge-test--capture-pull-topic
-                        (cl-letf (((symbol-function 'forge--rest)
-                                   (lambda (obj method resource &optional params &rest _)
+                        (cl-letf (((symbol-function 'forge--glab-post)
+                                   (lambda (obj resource &optional params &rest args)
                                      (forge-test--record-rest
-                                      method
+                                      "POST"
                                       (forge--format-resource obj resource)
-                                      params))))
+                                      params)
+                                     (let ((cb (cadr (memq :callback args))))
+                                       (when cb (funcall cb nil nil nil nil))))))
                           (forge--review-submit repo pr)))))
              (pos (alist-get 'position (plist-get (car calls) :data))))
         (should (equal (alist-get 'new_path pos) "src/foo.el"))
@@ -1478,7 +1484,10 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
       (closql-insert (forge-db) rc t)
       (let ((called
              (forge-test--capture-pull-topic
-               (cl-letf (((symbol-function 'forge--rest) #'ignore))
+               (cl-letf (((symbol-function 'forge--glab-post)
+                          (lambda (_obj _resource &optional _params &rest args)
+                            (let ((cb (cadr (memq :callback args))))
+                              (when cb (funcall cb nil nil nil nil))))))
                  (forge--review-submit repo pr)))))
         (should called)))))
 
