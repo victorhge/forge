@@ -814,7 +814,7 @@
                                       (and (eq side 'new) (cons 'new_line line))
                                       (and (eq side 'old) (cons 'old_line line))))))))
 
-(cl-defmethod forge--submit-review-reply
+(cl-defmethod forge--submit-add-review-reply
   ((repo forge-gitlab-repository) (opener forge-pullreq-review-comment))
   "Submit a reply to review comment OPENER on GitLab."
   (let* ((pr   (closql-get (forge-db) (oref opener pullreq) 'forge-pullreq))

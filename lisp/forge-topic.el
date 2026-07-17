@@ -32,7 +32,7 @@
 (require 'forge)
 (require 'forge-post)
 
-(declare-function forge-comment-pullreq          "forge-review" (pullreq))
+(declare-function forge-submit-pending-review    "forge-review" (pullreq))
 (declare-function forge-add-review-comment       "forge-review" ())
 (declare-function forge-add-single-review-comment "forge-review" ())
 (declare-function forge-resolve-review-thread    "forge-review" ())
@@ -1610,7 +1610,7 @@ With prefix argument VISIT, also visit the topic."
     ("/R" forge-request-changes)]
    ["Review"
     :if (lambda () (forge-pullreq-p (forge-current-topic)))
-    ("/v" "submit review"  forge-comment-pullreq)
+    ("/v" "submit review"  forge-submit-pending-review)
     ("/n" "add comment"    forge-add-review-comment)
     ("/N" "add immediate"  forge-add-single-review-comment)
     ("/K" "discard draft"  forge-discard-review-comment-at-point)

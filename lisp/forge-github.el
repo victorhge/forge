@@ -1462,7 +1462,7 @@
           (cons 'line      line)
           (cons 'side      (if (eq side 'old) "LEFT" "RIGHT")))))
 
-(cl-defmethod forge--submit-review-reply
+(cl-defmethod forge--submit-add-review-reply
   ((repo forge-github-repository) (opener forge-pullreq-review-comment))
   "Submit a reply to review comment OPENER on GitHub."
   (let* ((pr   (closql-get (forge-db) (oref opener pullreq) 'forge-pullreq))

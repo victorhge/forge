@@ -91,7 +91,7 @@ hitting the network.  Use `forge-test--make-repo' to create instances.")
    (forge--format-resource pr "/repos/:owner/:repo/pulls/:number/comments")
    (list (cons 'body text) (cons 'in_reply_to (oref opener number)))))
 
-;; Note: forge--submit-review-reply and forge--submit-add-single-review-comment
+;; Note: forge--submit-add-review-reply and forge--submit-add-single-review-comment
 ;; are NOT stubbed here.  They inherit the forge-github-repository cl-defmethod
 ;; implementations, which internally call forge--review-post-reply /
 ;; forge--review-post-comment — those ARE stubbed, so no network calls escape.
@@ -130,7 +130,7 @@ hitting the network.  Use `forge-test--make-gl-repo' to create instances.")
                (oref opener discussion-id)))
    (list (cons 'body text))))
 
-;; Note: forge--submit-review-reply and forge--submit-add-single-review-comment
+;; Note: forge--submit-add-review-reply and forge--submit-add-single-review-comment
 ;; are NOT stubbed here.  They inherit the forge-gitlab-repository cl-defmethod
 ;; implementations, which internally call forge--review-post-reply /
 ;; forge--review-post-comment — those ARE stubbed, so no network calls escape.
@@ -1124,7 +1124,7 @@ Regression: the predicate previously required ch=?+ so context lines were never 
         (should (string-match-p "merge_requests.*notes/42" (plist-get req :resource)))))))
 
 (ert-deftest forge-review-write-comment-pullreq-flushes-pending ()
-  "`forge-comment-pullreq' submits all pending comments for the pullreq."
+  "`forge-submit-pending-review' submits all pending comments for the pullreq."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
@@ -1138,7 +1138,7 @@ Regression: the predicate previously required ch=?+ so context lines were never 
                                    method
                                    (forge--format-resource obj resource)
                                    params))))
-                       (forge-comment-pullreq pr))))))
+                       (forge-submit-pending-review pr))))))
         (should (equal (plist-get req :method) "POST"))
         (should (string-match-p "pulls/42/reviews" (plist-get req :resource)))))))
 
@@ -1357,7 +1357,7 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
           (should (= (alist-get 'line (plist-get req :data)) 9)))))))
 
 (ert-deftest forge-review-write-submit-review-reply-posts-to-api ()
-  "`forge--submit-review-reply' calls forge--review-post-reply with the opener."
+  "`forge--submit-add-review-reply' calls forge--review-post-reply with the opener."
   (forge-test--with-db
     (let* ((repo   (forge-test--make-repo))
            (pr     (forge-test--make-pullreq repo))
@@ -1369,7 +1369,7 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
                      (insert "Reply body")
                      (setq-local forge--buffer-post-object opener)
                      (setq-local forge--pre-post-buffer (current-buffer))
-                     (forge-test--invoke-submit-fn #'forge--submit-review-reply repo opener)))))
+                     (forge-test--invoke-submit-fn #'forge--submit-add-review-reply repo opener)))))
         (should (string-match-p "pulls/42/comments" (plist-get req :resource)))
         (should (= (alist-get 'in_reply_to (plist-get req :data)) 999))
         (should (equal (alist-get 'body (plist-get req :data)) "Reply body"))))))
@@ -1527,7 +1527,7 @@ signal wrong-number-of-arguments."
                      "Edited body")))))
 
 (ert-deftest forge-review-regression-submit-review-reply-via-forge-post-submit ()
-  "Calling `forge-post-submit' with forge--submit-review-reply must not
+  "Calling `forge-post-submit' with forge--submit-add-review-reply must not
 signal wrong-number-of-arguments."
   (forge-test--with-db
     (let* ((repo   (forge-test--make-repo))
@@ -1540,7 +1540,7 @@ signal wrong-number-of-arguments."
       (let ((req (forge-test--capture-request
                    (cl-letf (((symbol-function 'forge-get-repository)
                               (lambda (_obj) repo)))
-                     (forge-test--with-post-buffer #'forge--submit-review-reply opener
+                     (forge-test--with-post-buffer #'forge--submit-add-review-reply opener
                        (insert "Reply via forge-post-submit")
                        (setq-local forge--pre-post-buffer (current-buffer))
                        (should-not (condition-case err

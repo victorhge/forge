@@ -46,7 +46,9 @@ use `forge-edit-post-hook'."
     forge-create-pullreq-show-diff)
   "Hook run after setting up a buffer to edit a post.
 Consult the variable `forge-edit-post-action' to determine the action;
-one of `new-discussion', `new-issue', `new-pullreq', `reply' and `edit'."
+one of `new-discussion', `new-issue', `new-pullreq', `new-answer',
+`new-comment', `new-approval', `new-request', `new-review-comment',
+`new-single-review-comment', `reply' and `edit'."
   :package-version '(forge . "0.6.0")
   :group 'forge
   :type 'hook
@@ -78,14 +80,14 @@ exist (or its location is unknown), then this directory is used instead."
 
 ;;;; Current
 
-(defun forge-post-at-point (&optional assert)
+(defun forge-post-at-point (&optional demand)
   "Return the post at point.
 If there is no such post and DEMAND is non-nil, then signal
 an error."
   (or (magit-section-value-if '(issue pullreq post))
-      (and assert (user-error "There is no post at point"))))
+      (and demand (user-error "There is no post at point"))))
 
-(defun forge-comment-at-point (&optional assert)
+(defun forge-comment-at-point (&optional demand)
   "Return the comment at point.
 If there is no such comment and DEMAND is non-nil, then signal
 an error."
@@ -94,7 +96,7 @@ an error."
              (and (or (forge-pullreq-post-p post)
                       (forge-issue-post-p post))
                   post)))
-      (and assert (user-error "There is no comment at point"))))
+      (and demand (user-error "There is no comment at point"))))
 
 ;;; Utilities
 
@@ -127,7 +129,9 @@ an error."
 
 (defvar-local forge-edit-post-action nil
   "The action being carried out by editing this post buffer.
-One of `new-discussion', `new-issue', `new-pullreq', `reply' and `edit'.")
+One of `new-discussion', `new-issue', `new-pullreq', `new-answer',
+`new-comment', `new-approval', `new-request', `new-review-comment',
+`new-single-review-comment', `reply' and `edit'.")
 
 (defvar-local forge--buffer-post-object nil)
 (defvar-local forge--buffer-template nil)

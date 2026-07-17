@@ -421,7 +421,7 @@ Clears any existing overlays first, then places fresh ones."
     (oset rc body body)
     (forge-refresh-buffer forge--pre-post-buffer)))
 
-(cl-defgeneric forge--submit-review-reply (repo opener)
+(cl-defgeneric forge--submit-add-review-reply (repo opener)
   "Submit a reply to the review comment OPENER in the current post buffer.
 REPO is the `forge-repository' the pull request belongs to.")
 
@@ -469,7 +469,7 @@ REPO is the `forge-repository' the pull request belongs to.")
     (let* ((pr (closql-get (forge-db) (oref opener pullreq) 'forge-pullreq)))
       (forge--setup-post-buffer
         opener
-        #'forge--submit-review-reply
+        #'forge--submit-add-review-reply
         "review-reply"
         (format "*forge: reply to review comment by %s*"
                 (oref opener author))))))
@@ -512,7 +512,7 @@ REPO is the `forge-repository'; POST is the `forge-pullreq'.")
       (format "*forge: add immediate comment at line %s*" (or line "?"))
       `((forge--buffer-post-object ,pr)))))
 
-(defun forge-comment-pullreq (pullreq)
+(defun forge-submit-pending-review (pullreq)
   "Submit pending review comments on PULLREQ."
   (interactive (list (forge-current-pullreq t)))
   (forge--review-submit (forge-get-repository pullreq) pullreq))

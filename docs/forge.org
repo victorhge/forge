@@ -1062,7 +1062,7 @@ together in a single review event:
   anchored to the diff line at point.  The comment is saved locally
   as a /pending/ comment — it is not yet posted to the forge.
 
-  To submit all pending comments at once, use ~forge-comment-pullreq~
+  To submit all pending comments at once, use ~forge-submit-pending-review~
   (see below).
 
 With the immediate workflow, a comment is posted directly to the API
@@ -1079,7 +1079,7 @@ cancel.
 
 ** Submitting Batched Comments
 
-- Command: forge-comment-pullreq ::
+- Command: forge-submit-pending-review ::
 
   This command submits all pending (locally staged) inline review
   comments on the current pull-request to the forge as a single
