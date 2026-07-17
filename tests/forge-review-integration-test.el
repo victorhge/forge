@@ -523,20 +523,24 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
                     :id           (forge--object-id (oref pr-obj id) "pending-1")
                     :their-id     nil
                     :discussion-id nil
-                    :number  0
+                    :number       0
                     :pullreq      (oref pr-obj id)
                     :new-path     path
+                    :old-path     nil
                     :new-line     1
+                    :old-line     nil
                     :body         "forge-itest submit-review A"
                     :pending-p    t))
               (rc2 (forge-pullreq-review-comment
                     :id           (forge--object-id (oref pr-obj id) "pending-2")
                     :their-id     nil
                     :discussion-id nil
-                    :number  0
+                    :number       0
                     :pullreq      (oref pr-obj id)
                     :new-path     path
+                    :old-path     nil
                     :new-line     2
+                    :old-line     nil
                     :body         "forge-itest submit-review B"
                     :pending-p    t))
               (_   (closql-insert (forge-db) rc1 t))
