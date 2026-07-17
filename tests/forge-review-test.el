@@ -280,6 +280,11 @@ OVERRIDES is a plist that replaces individual slots."
                 :pending-p     nil)
           overrides)))
 
+(defun forge-test--invoke-submit-fn (fn repo post)
+  "Simulate `forge-post-submit' by calling FN with REPO and POST.
+This exercises the two-argument dispatch protocol directly."
+  (funcall fn repo post))
+
 ;;; Data model
 
 (ert-deftest forge-review-data-model-slot-round-trip ()
@@ -1135,7 +1140,7 @@ and sets resolved-p nil in the DB."
                               resolved-p))))))))
 
 (ert-deftest forge-review-write-submit-add-review-comment-stages-pending ()
-  "`forge--submit-add-review-comment' inserts a pending row with the correct slots."
+  "`forge-review--stage-comment' inserts a pending row with the correct slots."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo)))
@@ -1150,7 +1155,7 @@ and sets resolved-p nil in the DB."
             (insert "A pending comment")
             (setq-local forge--buffer-post-object pr)
             (setq-local forge--pre-post-buffer diff-buf)
-            (forge--submit-add-review-comment))))
+            (forge-review--stage-comment nil nil))))
       (let* ((all (oref pr review-comments))
              (rc  (car all)))
         (should (= (length all) 1))
@@ -1160,7 +1165,7 @@ and sets resolved-p nil in the DB."
         (should (equal (oref rc new-path) "src/foo.el")))))
 
 (ert-deftest forge-review-write-submit-add-review-comment-context-line ()
-  "`forge--submit-add-review-comment' on a context line stores both new-line and old-line.
+  "`forge-review--stage-comment' on a context line stores both new-line and old-line.
 Regression: (car result) was a cons cell, not a symbol, so both lines were stored as nil."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
@@ -1176,7 +1181,7 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
             (insert "Context line comment")
             (setq-local forge--buffer-post-object pr)
             (setq-local forge--pre-post-buffer diff-buf)
-            (forge--submit-add-review-comment))))
+            (forge-review--stage-comment nil nil))))
       (let* ((rc (car (oref pr review-comments))))
         (should-not (null rc))
         ;; context-line-8 is old=8 new=8; both must be stored
@@ -1184,8 +1189,49 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
         (should (eq (oref rc old-line) 8))
         (should (equal (oref rc new-path) "src/foo.el")))))))
 
+(ert-deftest forge-review-write-stage-comment-dispatch-protocol ()
+  "`forge-review--stage-comment' accepts the two-arg (repo post) protocol used by
+`forge-post-submit' — verifies arity is not wrong-number-of-arguments."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo)))
+      (with-temp-buffer
+        (insert forge-test--simple-diff)
+        (diff-mode)
+        (goto-char (point-min))
+        (re-search-forward "^+(added-line-9)")
+        (beginning-of-line)
+        (let ((diff-buf (current-buffer)))
+          (with-temp-buffer
+            (insert "Dispatch protocol test")
+            (setq-local forge--buffer-post-object pr)
+            (setq-local forge--pre-post-buffer diff-buf)
+            ;; Call through the two-arg protocol, not directly
+            (forge-test--invoke-submit-fn #'forge-review--stage-comment repo pr))))
+      (let* ((all (oref pr review-comments)))
+        (should (= (length all) 1))
+        (should (eq (oref (car all) pending-p) t))
+        (should (equal (oref (car all) body) "Dispatch protocol test"))))))
+
+(ert-deftest forge-review-write-save-comment-edit-dispatch-protocol ()
+  "`forge-review--save-comment-edit' accepts the two-arg (repo post) protocol."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (rc   (forge-test--make-review-comment pr :body "Original")))
+      (closql-insert (forge-db) rc t)
+      (with-temp-buffer
+        (insert "Updated via dispatch")
+        (setq-local forge--buffer-post-object rc)
+        (setq-local forge--pre-post-buffer (current-buffer))
+        (forge-test--invoke-submit-fn #'forge-review--save-comment-edit repo rc))
+      (should (equal (oref (closql-get (forge-db) "rc-1"
+                                       'forge-pullreq-review-comment)
+                           body)
+                     "Updated via dispatch")))))
+
 (ert-deftest forge-review-write-submit-edit-review-comment-updates-body ()
-  "`forge--submit-edit-review-comment' updates the body slot in the DB."
+  "`forge-review--save-comment-edit' updates the body slot in the DB."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
@@ -1195,7 +1241,7 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
         (insert "Updated body")
         (setq-local forge--buffer-post-object rc)
         (setq-local forge--pre-post-buffer (current-buffer))
-        (forge--submit-edit-review-comment))
+        (forge-review--save-comment-edit nil nil))
       (should (equal (oref (closql-get (forge-db) "rc-1"
                                        'forge-pullreq-review-comment)
                            body)
