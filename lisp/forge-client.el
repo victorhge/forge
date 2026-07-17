@@ -27,13 +27,13 @@
 ;;; GraphQL
 
 (cl-defun forge--query ( obj-or-host query variables
-                         &key callback errorback noerror narrow until)
+                         &key callback errorback noerror narrow until synchronous)
   (declare (indent defun))
   (pcase-let ((`(,host ,forge) (forge--host-arguments obj-or-host)))
     (ghub-query query variables
       :auth 'forge :host host :forge forge
       :callback callback :errorback errorback :noerror noerror
-      :narrow narrow :until until)))
+      :narrow narrow :until until :synchronous synchronous)))
 
 (cl-defmacro forge-query ( obj-or-host query variables
                            &key callback errorback noerror narrow until)

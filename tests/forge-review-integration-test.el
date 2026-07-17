@@ -558,13 +558,11 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
          (when found-b (push (alist-get 'id found-b) posted-ids))
          (should found-a)
          (should found-b)
-         ;; Verify pending-p was cleared in the DB.
-         (should (null (oref (closql-get (forge-db) (oref rc1 id)
-                                         'forge-pullreq-review-comment)
-                             pending-p)))
-         (should (null (oref (closql-get (forge-db) (oref rc2 id)
-                                         'forge-pullreq-review-comment)
-                             pending-p))))))))
+         ;; Verify pending rows were deleted from the DB (flush deletes, not clears).
+         (should-not (closql-get (forge-db) (oref rc1 id)
+                                 'forge-pullreq-review-comment))
+         (should-not (closql-get (forge-db) (oref rc2 id)
+                                 'forge-pullreq-review-comment)))))))
 
 ;;; GitLab integration tests
 

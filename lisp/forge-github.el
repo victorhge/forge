@@ -1446,7 +1446,8 @@
   (forge--query pr
     (ghub--prepare-mutation
      (if resolved 'resolveReviewThread 'unresolveReviewThread))
-    (list (cons 'input (list (cons 'threadId (oref opener discussion-id)))))))
+    (list (cons 'input (list (cons 'threadId (oref opener discussion-id)))))
+    :synchronous t))
 
 (cl-defmethod forge--review-delete-comment ((_repo forge-github-repository) _pr rc)
   "DELETE a submitted review comment RC from GitHub."
