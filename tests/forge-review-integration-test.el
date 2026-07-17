@@ -440,8 +440,9 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
                               :body         "forge-itest post-reply opener"
                               :pending-p    nil))
               (_             (closql-insert (forge-db) opener-rc t))
-              (_             (forge--review-post-reply repo-obj pr-obj opener-rc
-                                                       "forge-itest post-reply body"))
+              (_             (forge-itest--with-sync-rest
+                               (forge--review-post-reply repo-obj pr-obj opener-rc
+                                                         "forge-itest post-reply body")))
               (comments      (forge-itest--gh-pr-comments owner name pr-number))
               (reply         (seq-find (lambda (c)
                                          (equal (alist-get 'in_reply_to_id c) opener-db-id))
@@ -473,7 +474,8 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
                               :body         "forge-itest delete-comment"
                               :pending-p    nil))
               (_             (closql-insert (forge-db) rc t))
-              (_             (forge--review-delete-comment repo-obj pr-obj rc))
+              (_             (forge-itest--with-sync-rest
+                               (forge--review-delete-comment repo-obj pr-obj rc)))
               (comments      (forge-itest--gh-pr-comments owner name pr-number)))
          (should-not (seq-find (lambda (c) (= (alist-get 'id c) comment-id))
                                comments)))))))
@@ -484,17 +486,18 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
     ('nil (skip-unless nil))
     (`(,owner ,name)
      (forge-itest--with-fixture-pr owner name
-       (let* ((result   (forge--review-post-comment
-                         repo-obj pr-obj
-                         "forge-itest post-comment body"
-                         path 'new 3))
-              (new-id   (alist-get 'id result))
-              (_        (push new-id posted-ids))
-              (comments (forge-itest--gh-pr-comments owner name pr-number))
-              (found    (seq-find (lambda (c) (equal (alist-get 'id c) new-id))
+       (forge-itest--with-sync-rest
+         (forge--review-post-comment
+          repo-obj pr-obj
+          "forge-itest post-comment body"
+          path 'new 3))
+       (let* ((comments (forge-itest--gh-pr-comments owner name pr-number))
+              (found    (seq-find (lambda (c)
+                                    (equal (alist-get 'body c)
+                                           "forge-itest post-comment body"))
                                   comments)))
+         (when found (push (alist-get 'id found) posted-ids))
          (should found)
-         (should (equal (alist-get 'body found) "forge-itest post-comment body"))
          (should (equal (alist-get 'path found) path))
          (should (= (alist-get 'line found) 3))
          (should (equal (alist-get 'side found) "RIGHT")))))))
@@ -515,7 +518,8 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
               (_             (forge--update-pullreq-review-comments repo-obj pr-obj threads))
               (opener        (seq-find (lambda (c) (null (oref c reply-to)))
                                        (oref pr-obj review-comments)))
-              (_             (forge--review-set-thread-resolved repo-obj pr-obj opener t))
+              (_             (forge-itest--with-sync-rest
+                               (forge--review-set-thread-resolved repo-obj pr-obj opener t)))
               ;; Re-fetch and verify isResolved.
               (threads2      (forge-itest--graphql-review-threads owner name pr-number))
               (disc-id       (oref opener discussion-id))
@@ -557,7 +561,8 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
                     :pending-p    t))
               (_   (closql-insert (forge-db) rc1 t))
               (_   (closql-insert (forge-db) rc2 t))
-              (_   (forge--review-submit repo-obj pr-obj))
+              (_   (forge-itest--with-sync-rest
+                     (forge--review-submit repo-obj pr-obj)))
               ;; Re-fetch from API to confirm both comments appeared.
               (comments (forge-itest--gh-pr-comments owner name pr-number))
               (found-a  (seq-find (lambda (c)
@@ -888,8 +893,9 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
                           :body         "forge-itest post-reply opener"
                           :pending-p    nil))
               (_         (closql-insert (forge-db) opener-rc t))
-              (_         (forge--review-post-reply repo-obj pr-obj opener-rc
-                                                   "forge-itest post-reply body"))
+              (_         (forge-itest--with-sync-rest
+                           (forge--review-post-reply repo-obj pr-obj opener-rc
+                                                     "forge-itest post-reply body")))
               (discussions (forge-itest--gl-discussions project-id mr-iid))
               (found-disc  (seq-find (lambda (d) (equal (alist-get 'id d) disc-id))
                                      discussions))
@@ -925,7 +931,8 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
                           :body         "forge-itest resolve-thread"
                           :pending-p    nil))
               (_         (closql-insert (forge-db) opener-rc t))
-              (_         (forge--review-set-thread-resolved repo-obj pr-obj opener-rc t))
+              (_         (forge-itest--with-sync-rest
+                           (forge--review-set-thread-resolved repo-obj pr-obj opener-rc t)))
               (discussions (forge-itest--gl-discussions project-id mr-iid))
               (found-disc  (seq-find (lambda (d) (equal (alist-get 'id d) disc-id))
                                      discussions)))
@@ -956,7 +963,8 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
                           :body         "forge-itest delete-comment"
                           :pending-p    nil))
               (_         (closql-insert (forge-db) rc t))
-              (_         (forge--review-delete-comment repo-obj pr-obj rc))
+              (_         (forge-itest--with-sync-rest
+                           (forge--review-delete-comment repo-obj pr-obj rc)))
               (discussions (forge-itest--gl-discussions project-id mr-iid))
               (all-notes   (seq-mapcat (lambda (d) (alist-get 'notes d))
                                        discussions)))
@@ -969,13 +977,12 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
     ('nil (skip-unless nil))
     (`(,owner ,name)
      (forge-itest--with-fixture-mr owner name
-       (let* ((result   (forge--review-post-comment
-                         repo-obj pr-obj
-                         "forge-itest post-comment body"
-                         path 'new 3))
-              (new-note-id (alist-get 'id (car (alist-get 'notes result))))
-              (_           (push new-note-id posted-ids))
-              (discussions (forge-itest--gl-discussions project-id mr-iid))
+       (forge-itest--with-sync-rest
+         (forge--review-post-comment
+          repo-obj pr-obj
+          "forge-itest post-comment body"
+          path 'new 3))
+       (let* ((discussions (forge-itest--gl-discussions project-id mr-iid))
               (inline      (seq-filter
                             (lambda (d)
                               (seq-some (lambda (n) (alist-get 'position n))
@@ -983,15 +990,18 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
                             discussions))
               (found-disc  (seq-find
                             (lambda (d)
-                              (seq-find (lambda (n) (= (alist-get 'id n) new-note-id))
+                              (seq-some (lambda (n)
+                                          (equal (alist-get 'body n)
+                                                 "forge-itest post-comment body"))
                                         (alist-get 'notes d)))
                             inline))
               (found-note  (when found-disc
-                             (seq-find (lambda (n) (= (alist-get 'id n) new-note-id))
+                             (seq-find (lambda (n)
+                                         (equal (alist-get 'body n)
+                                                "forge-itest post-comment body"))
                                        (alist-get 'notes found-disc)))))
+         (when found-note (push (alist-get 'id found-note) posted-ids))
          (should found-note)
-         (should (equal (alist-get 'body found-note)
-                        "forge-itest post-comment body"))
          (let ((pos (alist-get 'position found-note)))
            (should (equal (alist-get 'new_path pos) path))
            (should (= (alist-get 'new_line pos) 3))))))))
@@ -1028,7 +1038,8 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
                     :pending-p    t))
               (_   (closql-insert (forge-db) rc1 t))
               (_   (closql-insert (forge-db) rc2 t))
-              (_   (forge--review-submit repo-obj pr-obj))
+              (_   (forge-itest--with-sync-rest
+                     (forge--review-submit repo-obj pr-obj)))
               ;; Re-fetch from API to confirm both comments appeared.
               (discussions (forge-itest--gl-discussions project-id mr-iid))
               (inline      (seq-filter
