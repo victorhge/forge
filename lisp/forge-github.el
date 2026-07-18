@@ -1441,27 +1441,27 @@
   "Submit pending review comments for PR to GitHub via GraphQL addPullRequestReview."
   (let* ((repo    (forge-get-repository pr))
          (threads (forge--github-pending-review-threads pr)))
-    (forge--query pr
-      (ghub--prepare-mutation 'addPullRequestReview)
-      (list (cons 'input (delq nil
-                               (list (cons 'pullRequestId (oref pr their-id))
-                                     (cons 'event "COMMENT")
-                                     (cons 'body "")
-                                     (and threads
-                                          (cons 'threads (vconcat threads)))))))
+    (forge-mutate pr addPullRequestReview
+      ((pullRequestId (oref pr their-id))
+       (event "COMMENT")
+       (body  "")
+       (and threads (threads (vconcat threads))))
       :callback  (lambda (&rest _)
                    (forge--github-flush-pending-review-comments pr)
                    (when threads
                      (forge--pull-topic repo pr)))
-      :errorback (forge--post-submit-errorback))))
+      :errorback (forge--post-submit-errorback))
+    (when forge--query-synchronous
+      (forge--github-flush-pending-review-comments pr)
+      (when threads
+        (forge--pull-topic repo pr)))))
 
 (cl-defmethod forge--review-post-reply
   ((_repo forge-github-repository) _pr opener text &key callback errorback)
   "Reply to OPENER's thread on GitHub via addPullRequestReviewThreadReply."
-  (forge--query opener
-    (ghub--prepare-mutation 'addPullRequestReviewThreadReply)
-    (list (cons 'input (list (cons 'pullRequestReviewThreadId (oref opener discussion-id))
-                             (cons 'body text))))
+  (forge-mutate opener addPullRequestReviewThreadReply
+    ((pullRequestReviewThreadId (oref opener discussion-id))
+     (body text))
     :callback callback :errorback errorback))
 
 (cl-defmethod forge--review-set-thread-resolved
@@ -1476,21 +1476,19 @@
 (cl-defmethod forge--review-delete-comment
   ((_repo forge-github-repository) _pr rc &key callback errorback)
   "Delete review comment RC on GitHub via deletePullRequestReviewComment."
-  (forge--query rc
-    (ghub--prepare-mutation 'deletePullRequestReviewComment)
-    (list (cons 'input (list (cons 'id (oref rc their-id)))))
+  (forge-mutate rc deletePullRequestReviewComment
+    ((id (oref rc their-id)))
     :callback callback :errorback errorback))
 
 (cl-defmethod forge--review-post-comment
   ((_repo forge-github-repository) pr body path side line &key callback errorback)
   "Post a single inline comment at PATH SIDE LINE on GitHub via addPullRequestReviewThread."
-  (forge--query pr
-    (ghub--prepare-mutation 'addPullRequestReviewThread)
-    (list (cons 'input (list (cons 'pullRequestId (oref pr their-id))
-                             (cons 'path path)
-                             (cons 'line line)
-                             (cons 'side (if (eq side 'old) "LEFT" "RIGHT"))
-                             (cons 'body body))))
+  (forge-mutate pr addPullRequestReviewThread
+    ((pullRequestId (oref pr their-id))
+     (path path)
+     (line line)
+     (side (if (eq side 'old) "LEFT" "RIGHT"))
+     (body body))
     :callback callback :errorback errorback))
 
 (cl-defmethod forge--submit-add-review-reply

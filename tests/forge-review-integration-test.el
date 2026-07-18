@@ -229,9 +229,20 @@ fixture PR in OWNER/NAME.  Creates the branch and/or PR if absent."
     (format "/repos/%s/%s/pulls/%s/comments" owner name pr-number)))
 
 (defun forge-itest--clear-pr-comments (owner name pr-number)
-  "Delete all review comments on PR-NUMBER in OWNER/NAME."
+  "Delete all review comments and pending reviews on PR-NUMBER in OWNER/NAME."
   (dolist (c (forge-itest--gh-pr-comments owner name pr-number))
-    (forge-itest--delete-review-comment owner name (alist-get 'id c))))
+    (forge-itest--delete-review-comment owner name (alist-get 'id c)))
+  ;; Deleting individual comments leaves the pending review container behind.
+  ;; GitHub rejects new pending-review creation with 422 if one already exists,
+  ;; so explicitly delete any remaining PENDING reviews.
+  (dolist (r (forge-itest--gh
+              "GET" (format "/repos/%s/%s/pulls/%s/reviews" owner name pr-number)))
+    (when (equal (alist-get 'state r) "PENDING")
+      (condition-case nil
+          (forge-itest--gh
+           "DELETE" (format "/repos/%s/%s/pulls/%s/reviews/%s"
+                            owner name pr-number (alist-get 'id r)))
+        (error nil)))))
 
 (defun forge-itest--gl-clear-mr-comments (project-id mr-iid)
   "Delete all inline discussion notes on MR-IID in PROJECT-ID.
@@ -476,7 +487,10 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
                                comments)))))))
 
 (ert-deftest forge-itest-github-post-comment ()
-  "GitHub: forge--review-post-comment posts an inline comment visible via re-fetch."
+  "GitHub: forge--review-post-comment posts an inline comment visible via GraphQL re-fetch.
+`addPullRequestReviewThread' creates a pending review thread; pending comments
+are not returned by the REST `GET /pulls/comments' endpoint, so we verify via
+the GraphQL reviewThreads query instead."
   (pcase (forge-itest--github-repo)
     ('nil (skip-unless nil))
     (`(,owner ,name)
@@ -486,16 +500,19 @@ Deletes all comment IDs accumulated in POSTED-IDS on exit."
           repo-obj pr-obj
           "forge-itest post-comment body"
           path 'new 3))
-       (let* ((comments (forge-itest--gh-pr-comments owner name pr-number))
-              (found    (seq-find (lambda (c)
-                                    (equal (alist-get 'body c)
-                                           "forge-itest post-comment body"))
-                                  comments)))
-         (when found (push (alist-get 'id found) posted-ids))
+       ;; ghub unwraps (:edges t) so reviewThreads and comments are plain lists.
+       (let* ((threads (forge-itest--graphql-review-threads owner name pr-number))
+              (found   (seq-find
+                        (lambda (thread)
+                          (seq-find (lambda (c)
+                                      (equal (alist-get 'body c)
+                                             "forge-itest post-comment body"))
+                                    (alist-get 'comments thread)))
+                        threads)))
          (should found)
          (should (equal (alist-get 'path found) path))
          (should (= (alist-get 'line found) 3))
-         (should (equal (alist-get 'side found) "RIGHT")))))))
+         (should (equal (alist-get 'diffSide found) "RIGHT")))))))
 
 (ert-deftest forge-itest-github-resolve-thread ()
   "GitHub: forge--review-set-thread-resolved marks the thread resolved via GraphQL."
