@@ -1410,30 +1410,46 @@ Regression: (car result) was a cons cell, not a symbol, so the new line number w
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
-           (rc   (forge-test--make-review-comment pr :body "Original")))
+           (rc   (forge-test--make-review-comment pr :body "Original" :pending-p t)))
       (closql-insert (forge-db) rc t)
-      (with-temp-buffer
-        (insert "Updated via dispatch")
-        (setq-local forge--buffer-post-object rc)
-        (setq-local forge--pre-post-buffer (current-buffer))
-        (forge-test--invoke-submit-fn #'forge-review--save-comment-edit repo rc))
+      (forge-itest--with-sync-rest
+        (cl-letf (((symbol-function 'forge--review-edit-draft)
+                   (lambda (&rest args)
+                     (let ((body (nth 3 args)))
+                       (oset rc body body)
+                       (closql-insert (forge-db) rc t))))
+                  ((symbol-function 'forge-refresh-buffer) #'ignore)
+                  ((symbol-function 'magit-mode-bury-buffer) #'ignore))
+          (with-temp-buffer
+            (insert "Updated via dispatch")
+            (setq-local forge--buffer-post-object rc)
+            (setq-local forge--pre-post-buffer (current-buffer))
+            (forge-test--invoke-submit-fn #'forge-review--save-comment-edit repo rc))))
       (should (equal (oref (closql-get (forge-db) "rc-1"
                                        'forge-pullreq-review-comment)
                            body)
                      "Updated via dispatch")))))
 
 (ert-deftest forge-review-write-submit-edit-review-comment-updates-body ()
-  "`forge-review--save-comment-edit' updates the body slot in the DB."
+  "`forge-review--save-comment-edit' updates the body slot in the DB (pending path)."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
-           (rc   (forge-test--make-review-comment pr :body "Original")))
+           (rc   (forge-test--make-review-comment pr :body "Original" :pending-p t)))
       (closql-insert (forge-db) rc t)
-      (with-temp-buffer
-        (insert "Updated body")
-        (setq-local forge--buffer-post-object rc)
-        (setq-local forge--pre-post-buffer (current-buffer))
-        (forge-review--save-comment-edit nil nil))
+      (forge-itest--with-sync-rest
+        (cl-letf (((symbol-function 'forge--review-edit-draft)
+                   (lambda (&rest args)
+                     (let ((body (nth 3 args)))
+                       (oset rc body body)
+                       (closql-insert (forge-db) rc t))))
+                  ((symbol-function 'forge-refresh-buffer) #'ignore)
+                  ((symbol-function 'magit-mode-bury-buffer) #'ignore))
+          (with-temp-buffer
+            (insert "Updated body")
+            (setq-local forge--buffer-post-object rc)
+            (setq-local forge--pre-post-buffer (current-buffer))
+            (forge-review--save-comment-edit repo rc))))
       (should (equal (oref (closql-get (forge-db) "rc-1"
                                        'forge-pullreq-review-comment)
                            body)
@@ -1617,14 +1633,22 @@ signal wrong-number-of-arguments."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
-           (rc   (forge-test--make-review-comment pr :body "Original")))
+           (rc   (forge-test--make-review-comment pr :body "Original" :pending-p t)))
       (closql-insert (forge-db) rc t)
-      (forge-test--with-post-buffer #'forge-review--save-comment-edit rc
-        (insert "Edited body")
-        (setq-local forge--pre-post-buffer (current-buffer))
-        (should-not (condition-case err
-                        (progn (forge-post-submit) nil)
-                      (wrong-number-of-arguments err))))
+      (forge-itest--with-sync-rest
+        (cl-letf (((symbol-function 'forge--review-edit-draft)
+                   (lambda (&rest args)
+                     (let ((body (nth 3 args)))
+                       (oset rc body body)
+                       (closql-insert (forge-db) rc t))))
+                  ((symbol-function 'forge-refresh-buffer) #'ignore)
+                  ((symbol-function 'magit-mode-bury-buffer) #'ignore))
+          (forge-test--with-post-buffer #'forge-review--save-comment-edit rc
+            (insert "Edited body")
+            (setq-local forge--pre-post-buffer (current-buffer))
+            (should-not (condition-case err
+                            (progn (forge-post-submit) nil)
+                          (wrong-number-of-arguments err))))))
       (should (equal (oref (closql-get (forge-db) "rc-1"
                                        'forge-pullreq-review-comment)
                            body)
@@ -2253,6 +2277,34 @@ Defined here so unit tests do not need to load the integration test file."
       (should (not (string-match-p "<!--" result)))
       (should (string-match-p "Keep this" result))
       (should (string-match-p "And this" result)))))
+
+;;; Save comment edit
+
+(ert-deftest forge-review-save-comment-edit-calls-api-for-pending ()
+  "`forge-review--save-comment-edit' calls forge--review-edit-draft for pending rc."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (rc   (forge-test--make-review-comment
+                  pr :pending-p t :their-id "RC_node1" :body "Original"))
+           (api-called nil))
+      (closql-insert (forge-db) rc t)
+      (forge-itest--with-sync-rest
+        (cl-letf (((symbol-function 'forge--review-edit-draft)
+                   (lambda (&rest args)
+                     (setq api-called t)
+                     (let ((body (nth 3 args)))
+                       (oset rc body body))))
+                  ((symbol-function 'forge-refresh-buffer) #'ignore)
+                  ((symbol-function 'magit-mode-bury-buffer) #'ignore))
+          (with-temp-buffer
+            (forge-post-mode)
+            (setq forge--buffer-post-object rc)
+            (setq forge--pre-post-buffer (current-buffer))
+            (insert "Updated body")
+            (forge-review--save-comment-edit repo rc))))
+      (should api-called)
+      (should (equal (oref rc body) "Updated body")))))
 
 ;;; _
 

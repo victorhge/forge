@@ -417,12 +417,24 @@ Writes the DB row in the callback once the server responds with a real ID."
                          (magit-mode-bury-buffer 'kill))))
         :errorback (forge--post-submit-errorback)))))
 
-(defun forge-review--save-comment-edit (_repo _post)
-  "Save edits to the current review comment."
-  (let* ((rc   forge--buffer-post-object)
+(defun forge-review--save-comment-edit (repo post)
+  "Save edits to review comment POST via the forge API."
+  (let* ((rc   (if (forge--childp post 'forge-pullreq-review-comment) post
+                 forge--buffer-post-object))
+         (pr   (closql-get (forge-db) (oref rc pullreq) 'forge-pullreq))
          (body (forge--clear-comment-input (buffer-string))))
-    (oset rc body body)
-    (forge-refresh-buffer forge--pre-post-buffer)))
+    (if (oref rc pending-p)
+        (let ((prevbuf forge--pre-post-buffer)
+              (editbuf (current-buffer)))
+          (forge--review-edit-draft repo pr rc body
+            :callback  (lambda (_rc)
+                         (forge-refresh-buffer prevbuf)
+                         (when (buffer-live-p editbuf)
+                           (with-current-buffer editbuf
+                             (magit-mode-bury-buffer 'kill))))
+            :errorback (forge--post-submit-errorback)))
+      ;; Submitted comment: use the existing edit-post path.
+      (forge--submit-edit-post repo rc))))
 
 (cl-defgeneric forge--submit-add-review-reply (repo opener)
   "Submit a reply to the review comment OPENER in the current post buffer.
