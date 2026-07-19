@@ -1029,55 +1029,26 @@
        :callback  (forge--post-submit-callback)
        :errorback (forge--post-submit-errorback)))))
 
-(defun forge--github-pending-review-comments (topic)
-  "Return pending review-comment rows for TOPIC as a GitHub `comments' alist."
-  (mapcar (lambda (rc)
-            (let* ((left-p (and (oref rc old-line) (null (oref rc new-line))))
-                   (path   (if left-p (or (oref rc old-path) (oref rc new-path))
-                             (oref rc new-path)))
-                   (line   (if left-p (oref rc old-line) (oref rc new-line)))
-                   (side   (if left-p "LEFT" "RIGHT")))
-              (list (cons 'path path)
-                    (cons 'line line)
-                    (cons 'side side)
-                    (cons 'body (oref rc body)))))
-          (seq-filter (lambda (rc) (oref rc pending-p))
-                      (oref topic review-comments))))
-
-(defun forge--github-flush-pending-review-comments (topic)
-  "Delete all pending review-comment rows of TOPIC from the DB."
-  (dolist (rc (seq-filter (lambda (rc) (oref rc pending-p))
-                          (oref topic review-comments)))
-    (closql-delete rc)))
-
 (cl-defmethod forge--submit-approve-pullreq
   ((_repo forge-github-repository)
    (topic forge-pullreq))
-  (let ((body     (string-trim (buffer-str)))
-        (comments (forge--github-pending-review-comments topic))
-        (cb       (forge--post-submit-callback)))
+  (let ((body (string-trim (buffer-str)))
+        (cb   (forge--post-submit-callback)))
     (forge-rest topic "POST" "/repos/:owner/:repo/pulls/:number/reviews"
       ((event "APPROVE")
-       (and (not (equal body "")) (body body))
-       (and comments (comments comments)))
-      :callback  (lambda (value headers status req)
-                   (forge--github-flush-pending-review-comments topic)
-                   (funcall cb value headers status req))
+       (and (not (equal body "")) (body body)))
+      :callback  cb
       :errorback (forge--post-submit-errorback))))
 
 (cl-defmethod forge--submit-request-changes
   ((_repo forge-github-repository)
    (topic forge-pullreq))
-  (let ((body     (string-trim (buffer-str)))
-        (comments (forge--github-pending-review-comments topic))
-        (cb       (forge--post-submit-callback)))
+  (let ((body (string-trim (buffer-str)))
+        (cb   (forge--post-submit-callback)))
     (forge-rest topic "POST" "/repos/:owner/:repo/pulls/:number/reviews"
       ((event "REQUEST_CHANGES")
-       (and (not (equal body "")) (body body))
-       (and comments (comments comments)))
-      :callback  (lambda (value headers status req)
-                   (forge--github-flush-pending-review-comments topic)
-                   (funcall cb value headers status req))
+       (and (not (equal body "")) (body body)))
+      :callback  cb
       :errorback (forge--post-submit-errorback))))
 
 (cl-defmethod forge--set-topic-title
@@ -1421,40 +1392,6 @@
                    t))))))))))
 
 ;;; Review – write operations
-
-(defun forge--github-pending-review-threads (pr)
-  "Return pending review-comment rows for PR as GraphQL DraftPullRequestReviewThread inputs."
-  (mapcar (lambda (rc)
-            (let* ((left-p (and (oref rc old-line) (null (oref rc new-line))))
-                   (path   (if left-p (or (oref rc old-path) (oref rc new-path))
-                             (oref rc new-path)))
-                   (line   (if left-p (oref rc old-line) (oref rc new-line)))
-                   (side   (if left-p "LEFT" "RIGHT")))
-              (delq nil (list (cons 'path path)
-                              (cons 'line line)
-                              (cons 'side side)
-                              (cons 'body (oref rc body))))))
-          (seq-filter (lambda (rc) (oref rc pending-p))
-                      (oref pr review-comments))))
-
-(cl-defmethod forge--review-submit ((_repo forge-github-repository) pr)
-  "Submit pending review comments for PR to GitHub via GraphQL addPullRequestReview."
-  (let* ((repo    (forge-get-repository pr))
-         (threads (forge--github-pending-review-threads pr)))
-    (forge-mutate pr addPullRequestReview
-      ((pullRequestId (oref pr their-id))
-       (event "COMMENT")
-       (body  "")
-       (and threads (threads (vconcat threads))))
-      :callback  (lambda (&rest _)
-                   (forge--github-flush-pending-review-comments pr)
-                   (when threads
-                     (forge--pull-topic repo pr)))
-      :errorback (forge--post-submit-errorback))
-    (when forge--query-synchronous
-      (forge--github-flush-pending-review-comments pr)
-      (when threads
-        (forge--pull-topic repo pr)))))
 
 (cl-defmethod forge--review-post-reply
   ((_repo forge-github-repository) _pr opener text &key callback errorback)

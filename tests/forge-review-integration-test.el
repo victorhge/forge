@@ -542,7 +542,7 @@ the GraphQL reviewThreads query instead."
          (should (eq (alist-get 'isResolved found-thread) t)))))))
 
 (ert-deftest forge-itest-github-submit-review ()
-  "GitHub: forge--review-submit posts all pending comments and clears pending-p."
+  "GitHub: forge--review-publish-pending publishes all pending draft comments."
   (pcase (forge-itest--github-repo)
     ('nil (skip-unless nil))
     (`(,owner ,name)
@@ -574,7 +574,9 @@ the GraphQL reviewThreads query instead."
               (_   (closql-insert (forge-db) rc1 t))
               (_   (closql-insert (forge-db) rc2 t))
               (_   (forge-itest--with-sync-rest
-                     (forge--review-submit repo-obj pr-obj)))
+                     (forge--review-publish-pending repo-obj pr-obj
+                       :callback  (lambda (&rest _) nil)
+                       :errorback #'error)))
               ;; Re-fetch from API to confirm both comments appeared.
               (comments (forge-itest--gh-pr-comments owner name pr-number))
               (found-a  (seq-find (lambda (c)
@@ -1019,7 +1021,7 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
            (should (= (alist-get 'new_line pos) 3))))))))
 
 (ert-deftest forge-itest-gitlab-submit-review ()
-  "GitLab: forge--review-submit posts all pending comments as inline discussions."
+  "GitLab: forge--review-publish-pending publishes all pending draft comments."
   (pcase (forge-itest--gitlab-repo)
     ('nil (skip-unless nil))
     (`(,owner ,name)
@@ -1051,7 +1053,9 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
               (_   (closql-insert (forge-db) rc1 t))
               (_   (closql-insert (forge-db) rc2 t))
               (_   (forge-itest--with-sync-rest
-                     (forge--review-submit repo-obj pr-obj)))
+                     (forge--review-publish-pending repo-obj pr-obj
+                       :callback  (lambda (&rest _) nil)
+                       :errorback #'error)))
               ;; Re-fetch from API to confirm both comments appeared.
               (discussions (forge-itest--gl-discussions project-id mr-iid))
               (inline      (seq-filter

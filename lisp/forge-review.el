@@ -128,9 +128,6 @@ For context lines: returns an alist with both (old . N) and (new . N)."
 
 ;;; Write Operations – generics (methods live in forge-github.el / forge-gitlab.el)
 
-(cl-defgeneric forge--review-submit (repo pr)
-  "Submit pending review comments on PR to the forge as a COMMENT review.")
-
 (cl-defgeneric forge--review-post-reply (repo pr opener text &key callback errorback)
   "Post TEXT as a reply to the thread whose opener is OPENER.
 CALLBACK is called on success; ERRORBACK on failure.")
@@ -509,9 +506,13 @@ REPO is the `forge-repository' the pull request belongs to.")
 REPO is the `forge-repository'; POST is the `forge-pullreq'.")
 
 (defun forge-submit-pending-review (pullreq)
-  "Submit pending review comments on PULLREQ."
+  "Publish all pending (draft) review comments on PULLREQ."
   (interactive (list (forge-current-pullreq t)))
-  (forge--review-submit (forge-get-repository pullreq) pullreq))
+  (let* ((repo (forge-get-repository pullreq)))
+    (forge--review-publish-pending repo pullreq
+      :callback  (lambda (&rest _)
+                   (forge--pull-topic repo pullreq))
+      :errorback (forge--post-submit-errorback))))
 
 ;;; _
 ;; Local Variables:
