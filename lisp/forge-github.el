@@ -982,6 +982,15 @@
   ((repo forge-github-repository)
    (post forge-post))
   (cl-typecase post
+    (forge-pullreq-review-comment
+     (forge--query repo
+       `(mutation (updatePullRequestReviewComment
+                   [(input $input UpdatePullRequestReviewCommentInput!)]
+                   clientMutationId))
+       `((input (pullRequestReviewCommentId . ,(forge--their-id post))
+                (body . ,(string-trim (buffer-str)))))
+       :callback  (forge--post-submit-callback)
+       :errorback (forge--post-submit-errorback)))
     ((or forge-issue-post forge-pullreq-post)
      ;; Cannot use GraphQL because we made the mistake to derive our ID
      ;; from the number instead of their ID.  `updatePullRequestComment'

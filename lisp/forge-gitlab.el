@@ -379,8 +379,9 @@
         (forge--rest pullreq "GET"
           "/projects/:project/merge_requests/:number/draft_notes"
           nil
-          :callback (lambda (data _headers _status _req)
-                      (forge--update-pullreq-draft-notes repo pullreq data)))
+          :callback  (lambda (data _headers _status _req)
+                       (forge--update-pullreq-draft-notes repo pullreq data))
+          :errorback (lambda (&rest _) nil))
         (let ((until (oref repo pullreqs-until)))
           (when (or (not until) (string> .updated_at until))
             (oset repo pullreqs-until .updated_at)))
