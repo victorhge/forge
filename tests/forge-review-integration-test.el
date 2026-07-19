@@ -547,32 +547,16 @@ the GraphQL reviewThreads query instead."
     ('nil (skip-unless nil))
     (`(,owner ,name)
      (forge-itest--with-fixture-pr owner name
-       (let* ((rc1 (forge-pullreq-review-comment
-                    :id           (forge--object-id (oref pr-obj id) "pending-1")
-                    :their-id     nil
-                    :discussion-id nil
-                    :number       0
-                    :pullreq      (oref pr-obj id)
-                    :new-path     path
-                    :old-path     nil
-                    :new-line     1
-                    :old-line     nil
-                    :body         "forge-itest submit-review A"
-                    :pending-p    t))
-              (rc2 (forge-pullreq-review-comment
-                    :id           (forge--object-id (oref pr-obj id) "pending-2")
-                    :their-id     nil
-                    :discussion-id nil
-                    :number       0
-                    :pullreq      (oref pr-obj id)
-                    :new-path     path
-                    :old-path     nil
-                    :new-line     2
-                    :old-line     nil
-                    :body         "forge-itest submit-review B"
-                    :pending-p    t))
-              (_   (closql-insert (forge-db) rc1 t))
-              (_   (closql-insert (forge-db) rc2 t))
+       (let* ((_   (forge-itest--with-sync-rest
+                     (forge--review-create-draft repo-obj pr-obj
+                       "forge-itest submit-review A" path 'new 1
+                       :callback  (lambda (&rest _) nil)
+                       :errorback #'error)))
+              (_   (forge-itest--with-sync-rest
+                     (forge--review-create-draft repo-obj pr-obj
+                       "forge-itest submit-review B" path 'new 2
+                       :callback  (lambda (&rest _) nil)
+                       :errorback #'error)))
               (_   (forge-itest--with-sync-rest
                      (forge--review-publish-pending repo-obj pr-obj
                        :callback  (lambda (&rest _) nil)
@@ -588,12 +572,7 @@ the GraphQL reviewThreads query instead."
          (when found-a (push (alist-get 'id found-a) posted-ids))
          (when found-b (push (alist-get 'id found-b) posted-ids))
          (should found-a)
-         (should found-b)
-         ;; Verify pending rows were deleted from the DB (flush deletes, not clears).
-         (should-not (closql-get (forge-db) (oref rc1 id)
-                                 'forge-pullreq-review-comment))
-         (should-not (closql-get (forge-db) (oref rc2 id)
-                                 'forge-pullreq-review-comment)))))))
+         (should found-b)))))
 
 ;;; GitLab integration tests
 
@@ -1026,32 +1005,16 @@ Deletes all note IDs accumulated in POSTED-IDS on exit."
     ('nil (skip-unless nil))
     (`(,owner ,name)
      (forge-itest--with-fixture-mr owner name
-       (let* ((rc1 (forge-pullreq-review-comment
-                    :id           (forge--object-id (oref pr-obj id) "gl-pending-1")
-                    :their-id     nil
-                    :discussion-id nil
-                    :number  0
-                    :pullreq      (oref pr-obj id)
-                    :new-path     path
-                    :old-path     path
-                    :new-line     1
-                    :old-line     nil
-                    :body         "forge-itest gl-submit-review A"
-                    :pending-p    t))
-              (rc2 (forge-pullreq-review-comment
-                    :id           (forge--object-id (oref pr-obj id) "gl-pending-2")
-                    :their-id     nil
-                    :discussion-id nil
-                    :number  0
-                    :pullreq      (oref pr-obj id)
-                    :new-path     path
-                    :old-path     path
-                    :new-line     2
-                    :old-line     nil
-                    :body         "forge-itest gl-submit-review B"
-                    :pending-p    t))
-              (_   (closql-insert (forge-db) rc1 t))
-              (_   (closql-insert (forge-db) rc2 t))
+       (let* ((_   (forge-itest--with-sync-rest
+                     (forge--review-create-draft repo-obj pr-obj
+                       "forge-itest gl-submit-review A" path 'new 1
+                       :callback  (lambda (&rest _) nil)
+                       :errorback #'error)))
+              (_   (forge-itest--with-sync-rest
+                     (forge--review-create-draft repo-obj pr-obj
+                       "forge-itest gl-submit-review B" path 'new 2
+                       :callback  (lambda (&rest _) nil)
+                       :errorback #'error)))
               (_   (forge-itest--with-sync-rest
                      (forge--review-publish-pending repo-obj pr-obj
                        :callback  (lambda (&rest _) nil)
