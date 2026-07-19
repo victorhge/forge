@@ -1491,6 +1491,136 @@
      (body body))
     :callback callback :errorback errorback))
 
+(cl-defmethod forge--review-create-draft
+  ((_repo forge-github-repository) pr body path side line &key callback errorback)
+  "Create a GitHub draft review thread at PATH SIDE LINE with BODY."
+  (forge--query pr
+    `(mutation
+      [(input $input AddPullRequestReviewThreadInput!)]
+      (addPullRequestReviewThread
+       [(input $input)]
+       (thread
+        (comments
+         [(first 1)]
+         (nodes id databaseId
+                (author login) body createdAt updatedAt
+                diffHunk (reactionGroups content (reactors totalCount))
+                (pullRequestReview id state))))))
+    `((input
+       (pullRequestId . ,(oref pr their-id))
+       (path . ,path)
+       (line . ,line)
+       (side . ,(if (eq side 'old) "LEFT" "RIGHT"))
+       (body . ,body)))
+    :callback  (lambda (data _headers _status _req)
+                 (let* ((node (car (alist-get 'nodes
+                                    (alist-get 'comments
+                                     (alist-get 'thread
+                                      (alist-get 'addPullRequestReviewThread data)))))))
+                   (when callback
+                     (funcall callback
+                              (forge--github-draft-node-to-rc pr node)))))
+    :errorback errorback))
+
+(defun forge--github-draft-node-to-rc (pr node)
+  "Map a GitHub comment NODE from addPullRequestReviewThread into a DB row.
+Inserts the row and returns it."
+  (let-alist node
+    (let* ((rc (forge-pullreq-review-comment
+                :id           (forge--object-id (oref pr id) .id)
+                :their-id     .id
+                :discussion-id nil        ; thread ID not returned here; filled on next pull
+                :number       .databaseId
+                :pullreq      (oref pr id)
+                :new-path     nil         ; not returned by mutation; filled on next pull
+                :old-path     nil
+                :new-line     nil
+                :old-line     nil
+                :diff-hunk    .diffHunk
+                :outdated-p   nil
+                :resolved-p   nil
+                :reply-to     nil
+                :review-state 'pending
+                :author       .author.login
+                :body         (forge--sanitize-string .body)
+                :created      .createdAt
+                :updated      .updatedAt
+                :reactions    (forge--reaction-groups-to-alist .reactionGroups)
+                :pending-p    t)))
+      (closql-insert (forge-db) rc t)
+      rc)))
+
+(cl-defmethod forge--review-edit-draft
+  ((_repo forge-github-repository) _pr rc body &key callback errorback)
+  "Edit the body of GitHub draft review comment RC."
+  (forge--query rc
+    `(mutation
+      [(input $input UpdatePullRequestReviewCommentInput!)]
+      (updatePullRequestReviewComment
+       [(input $input)]
+       (pullRequestReviewComment id body updatedAt)))
+    `((input
+       (pullRequestReviewCommentId . ,(oref rc their-id))
+       (body . ,body)))
+    :callback  (lambda (data _headers _status _req)
+                 (let* ((updated (alist-get 'updatePullRequestReviewComment data)))
+                   (oset rc body (alist-get 'body updated))
+                   (oset rc updated (alist-get 'updatedAt updated))
+                   (when callback (funcall callback rc))))
+    :errorback errorback))
+
+(defun forge--github-publish-pending--submit (pr review-id callback errorback)
+  "Fire submitPullRequestReview for REVIEW-ID on PR.
+Used by `forge--review-publish-pending' for both sync and async paths."
+  (forge--query pr
+    `(mutation
+      [(input $input SubmitPullRequestReviewInput!)]
+      (submitPullRequestReview
+       [(input $input)]
+       (pullRequestReview id)))
+    `((input
+       (pullRequestReviewId . ,review-id)
+       (event . "COMMENT")
+       (body  . "")))
+    :callback  callback
+    :errorback errorback))
+
+(cl-defmethod forge--review-publish-pending
+  ((_repo forge-github-repository) pr &key callback errorback)
+  "Submit the current user's pending review on PR via submitPullRequestReview."
+  (let ((data (forge--query pr
+                '(query
+                  [(id $id ID!)]
+                  (node [(id $id)]
+                        (... on PullRequest
+                             (reviews [(last 1) (states [PENDING])]
+                                      (nodes id)))))
+                `((id . ,(oref pr their-id)))
+                :callback  (lambda (data _headers _status _req)
+                             (let* ((nodes (alist-get 'nodes
+                                            (alist-get 'reviews
+                                             (alist-get 'node data))))
+                                    (review-id (and nodes (alist-get 'id (car nodes)))))
+                               (if (not review-id)
+                                   (when errorback
+                                     (funcall errorback
+                                              (make-condition-variable "no pending review found")
+                                              nil nil nil))
+                                 (forge--github-publish-pending--submit
+                                  pr review-id callback errorback))))
+                :errorback errorback)))
+    (when forge--query-synchronous
+      (let* ((nodes (alist-get 'nodes
+                     (alist-get 'reviews
+                      (alist-get 'node data))))
+             (review-id (and nodes (alist-get 'id (car nodes)))))
+        (if (not review-id)
+            (when errorback
+              (funcall errorback
+                       (make-condition-variable "no pending review found") nil nil nil))
+          (forge--github-publish-pending--submit
+           pr review-id callback errorback))))))
+
 (cl-defmethod forge--submit-add-review-reply
   ((repo forge-github-repository) (opener forge-pullreq-review-comment))
   "Submit a reply to review comment OPENER on GitHub."

@@ -2043,6 +2043,71 @@ buffer into a new magit-diff-mode buffer via magit-previous-section."
       (delete-overlay ov)
       (kill-buffer (overlay-buffer ov)))))
 
+;;; Draft create / edit / publish (GitHub)
+
+(defmacro forge-itest--with-sync-rest (&rest body)
+  "Execute BODY with all HTTP requests forced synchronous.
+Binds `forge--rest-synchronous' and `forge--query-synchronous' to t.
+Defined here so unit tests do not need to load the integration test file."
+  (declare (indent 0))
+  `(let ((forge--rest-synchronous t)
+         (forge--query-synchronous t))
+     ,@body))
+
+(ert-deftest forge-review-github-create-draft-calls-addPullRequestReviewThread ()
+  "forge--review-create-draft calls addPullRequestReviewThread and stores row with pending-p t."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo)))
+      (forge-itest--with-sync-rest
+        (let ((called-with nil))
+          (cl-letf (((symbol-function 'forge--query)
+                     (lambda (_obj _query vars &rest _)
+                       (setq called-with vars)
+                       ;; Fake response: new thread with one comment node.
+                       '((addPullRequestReviewThread
+                          (thread
+                           (comments
+                            (nodes ((id . "RC_new1")
+                                    (databaseId . 999)
+                                    (pullRequestReview (id . "PRR_rev1"))
+                                    (author (login . "alice"))
+                                    (body . "My draft")
+                                    (createdAt . "2026-07-19T10:00:00Z")
+                                    (updatedAt . "2026-07-19T10:00:00Z")
+                                    (reactionGroups . nil)
+                                    (diffHunk . "")
+                                    (position . 5))))))))))
+            (forge--review-create-draft
+             repo pr "My draft" "src/foo.el" 'new 5
+             :callback (lambda (rc)
+                         (should (equal (oref rc their-id) "RC_new1"))
+                         (should (oref rc pending-p)))
+             :errorback #'error)))))))
+
+(ert-deftest forge-review-github-publish-pending-calls-submitPullRequestReview ()
+  "forge--review-publish-pending queries review ID then calls submitPullRequestReview."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (_rc  (forge-test--make-review-comment
+                  pr :pending-p t :their-id "RC_node1")))
+      (forge-itest--with-sync-rest
+        (let ((mutations nil))
+          (cl-letf (((symbol-function 'forge--query)
+                     (lambda (_obj query vars &rest _)
+                       (push (cons query vars) mutations)
+                       (if (string-match-p "PENDING" (format "%s" query))
+                           '((node (reviews (nodes ((id . "PRR_rev1"))))))
+                         nil))))
+            (forge--review-publish-pending
+             repo pr
+             :callback (lambda (&rest _) nil)
+             :errorback #'error)
+            ;; First call: lookup; second: submitPullRequestReview.
+            (should (= (length mutations) 2))
+            (should (string-match-p "submit" (downcase (format "%s" (caar mutations)))))))))))
+
 ;;; Reply context stripping
 
 (ert-deftest forge-review-reply-context-html-comment-stripped ()
