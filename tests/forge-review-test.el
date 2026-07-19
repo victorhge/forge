@@ -1499,6 +1499,50 @@ signal wrong-number-of-arguments."
           (should (equal (alist-get 'body (plist-get req :data))
                          "Immediate via forge-post-submit")))))))
 
+(ert-deftest forge-review-regression-gitlab-submit-add-single-review-comment-via-forge-post-submit ()
+  "`forge-post-submit' with `forge--submit-add-single-review-comment' on GitLab posts to discussions."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-gl-repo))
+           (pr   (forge-test--make-gl-pullreq repo)))
+      (with-temp-buffer
+        (insert forge-test--simple-diff)
+        (diff-mode)
+        (goto-char (point-min))
+        (re-search-forward "^+(added-line-9)")
+        (beginning-of-line)
+        (let* ((diff-buf (current-buffer))
+               (req (forge-test--capture-request
+                      (forge-test--with-post-buffer
+                          #'forge--submit-add-single-review-comment pr
+                        (insert "GL immediate via forge-post-submit")
+                        (setq-local forge--pre-post-buffer diff-buf)
+                        (should-not (condition-case err
+                                        (progn (forge-post-submit) nil)
+                                      (wrong-number-of-arguments err)))))))
+          (should (string-match-p "merge_requests.*discussions" (plist-get req :resource)))
+          (should (equal (alist-get 'body (plist-get req :data))
+                         "GL immediate via forge-post-submit")))))))
+
+(ert-deftest forge-review-regression-gitlab-submit-add-review-reply-via-forge-post-submit ()
+  "`forge-post-submit' with `forge--submit-add-review-reply' on GitLab posts reply note."
+  (forge-test--with-db
+    (let* ((repo   (forge-test--make-gl-repo))
+           (pr     (forge-test--make-gl-pullreq repo))
+           (opener (forge-test--make-gl-review-comment pr
+                     :id "rc-gl-opener" :number 77 :discussion-id "disc-gl-1")))
+      (closql-insert (forge-db) opener t)
+      (let ((req (forge-test--capture-request
+                   (forge-test--with-post-buffer #'forge--submit-add-review-reply opener
+                     (insert "GL reply via forge-post-submit")
+                     (setq-local forge--pre-post-buffer (current-buffer))
+                     (should-not (condition-case err
+                                     (progn (forge-post-submit) nil)
+                                   (wrong-number-of-arguments err)))))))
+        (should (equal (plist-get req :method) "POST"))
+        (should (string-match-p "discussions/disc-gl-1/notes" (plist-get req :resource)))
+        (should (equal (alist-get 'body (plist-get req :data))
+                       "GL reply via forge-post-submit"))))))
+
 ;;; Display
 
 (ert-deftest forge-review-display-review-threads-section-present ()
@@ -1667,6 +1711,64 @@ signal wrong-number-of-arguments."
         (should (overlay-get ov 'after-string))
         (should (string-match-p "Test comment"
                                 (overlay-get ov 'after-string)))))))
+
+(ert-deftest forge-review-display-overlay-includes-replies ()
+  "Replies are included in the overlay after-string, in order after the opener."
+  (let* ((opener (forge-pullreq-review-comment
+                  :id "op-1" :their-id "x" :discussion-id "d1"
+                  :number 0 :pullreq "pr-1"
+                  :new-path "src/foo.el" :old-path nil
+                  :new-line 1 :old-line nil
+                  :author "alice" :body "Opener comment"
+                  :pending-p nil :reply-to nil))
+         (reply1 (forge-pullreq-review-comment
+                  :id "rp-1" :their-id "y" :discussion-id nil
+                  :number 1 :pullreq "pr-1"
+                  :new-path "src/foo.el" :old-path nil
+                  :new-line 1 :old-line nil
+                  :author "bob" :body "First reply"
+                  :pending-p nil :reply-to "d1"))
+         (reply2 (forge-pullreq-review-comment
+                  :id "rp-2" :their-id "z" :discussion-id nil
+                  :number 2 :pullreq "pr-1"
+                  :new-path "src/foo.el" :old-path nil
+                  :new-line 1 :old-line nil
+                  :author "carol" :body "Second reply"
+                  :pending-p nil :reply-to "d1")))
+    (with-temp-buffer
+      (insert "context line\n")
+      (goto-char (point-min))
+      (let* ((ov  (forge--place-review-comment-overlay
+                   opener (point) (pos-eol) (list reply1 reply2)))
+             (txt (overlay-get ov 'after-string)))
+        (should (overlayp ov))
+        ;; All three comments appear.
+        (should (string-match-p "Opener comment" txt))
+        (should (string-match-p "First reply"    txt))
+        (should (string-match-p "Second reply"   txt))
+        ;; Opener precedes both replies.
+        (should (< (string-match "Opener comment" txt)
+                   (string-match "First reply"    txt)))
+        (should (< (string-match "First reply"    txt)
+                   (string-match "Second reply"   txt)))))))
+
+(ert-deftest forge-review-display-overlay-opener-only-no-replies ()
+  "Overlay with no replies still renders correctly."
+  (with-temp-buffer
+    (insert "context line\n")
+    (goto-char (point-min))
+    (let* ((rc  (forge-pullreq-review-comment
+                 :id "rc-solo" :their-id "x" :discussion-id "d2"
+                 :number 0 :pullreq "pr-1"
+                 :new-path "src/foo.el" :old-path nil
+                 :new-line 1 :old-line nil
+                 :author "dave" :body "Solo comment"
+                 :pending-p nil :reply-to nil))
+           (ov  (forge--place-review-comment-overlay rc (point) (pos-eol)))
+           (txt (overlay-get ov 'after-string)))
+      (should (overlayp ov))
+      (should (string-match-p "Solo comment" txt))
+      (should-not (string-match-p "reply" txt)))))
 
 (ert-deftest forge-review-display-diff-hunk-fontified ()
   "forge--fontify-diff returns a string with face or font-lock-face properties."

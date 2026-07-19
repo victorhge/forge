@@ -262,12 +262,15 @@ REPLIES-BY-DISC is a hash table mapping discussion-id to reply list."
 
 ;;; Display – Diff buffer overlays
 
-(defun forge--place-review-comment-overlay (rc start end)
-  "Create and return an overlay at [START END] showing RC's body."
-  (let* ((ov       (make-overlay start end))
-         (body     (or (oref rc body) ""))
-         (author   (or (oref rc author) ""))
-         (text     (concat "\n" author ": " body "\n")))
+(defun forge--place-review-comment-overlay (rc start end &optional replies)
+  "Create and return an overlay at [START END] showing RC's body and REPLIES."
+  (let* ((ov   (make-overlay start end))
+         (text (apply #'concat
+                      "\n"
+                      (mapcar (lambda (c)
+                                (concat (or (oref c author) "") ": "
+                                        (or (oref c body) "") "\n"))
+                              (cons rc replies)))))
     (overlay-put ov 'after-string text)
     (overlay-put ov 'forge-review-comment t)
     (overlay-put ov 'forge-review-comment-object rc)
@@ -283,21 +286,28 @@ Clears any existing overlays first, then places fresh ones."
   (when (derived-mode-p 'magit-diff-mode)
     (when-let* ((pr (forge-current-pullreq)))
       (forge--clear-review-comment-overlays)
-      (dolist (rc (seq-filter (lambda (c) (null (oref c reply-to)))
-                              (oref pr review-comments)))
-        (let* ((new-path (oref rc new-path))
-               (old-path (oref rc old-path))
-               (side     (if new-path 'new 'old))
-               (line     (or (oref rc new-line) (oref rc old-line))))
-          (when line
-            (save-excursion
-              (condition-case nil
-                  (progn
-                    (forge--diff-goto-line new-path old-path side line)
-                    (let ((pos (point)))
-                      (forge--place-review-comment-overlay
-                       rc pos (pos-eol))))
-                (error nil)))))))))
+      (let ((all-comments    (oref pr review-comments))
+            (replies-by-disc (make-hash-table :test 'equal)))
+        (dolist (c all-comments)
+          (when-let ((disc-id (oref c reply-to)))
+            (push c (gethash disc-id replies-by-disc))))
+        (dolist (rc (seq-filter (lambda (c) (null (oref c reply-to)))
+                                all-comments))
+          (let* ((new-path (oref rc new-path))
+                 (old-path (oref rc old-path))
+                 (side     (if new-path 'new 'old))
+                 (line     (or (oref rc new-line) (oref rc old-line))))
+            (when line
+              (save-excursion
+                (condition-case nil
+                    (progn
+                      (forge--diff-goto-line new-path old-path side line)
+                      (let ((replies (nreverse
+                                      (gethash (oref rc discussion-id)
+                                               replies-by-disc))))
+                        (forge--place-review-comment-overlay
+                         rc (point) (pos-eol) replies)))
+                  (error nil))))))))))
 
 (add-hook 'magit-refresh-buffer-hook #'forge--maybe-insert-review-threads-in-diff)
 
