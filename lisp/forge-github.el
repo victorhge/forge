@@ -1494,7 +1494,7 @@
 (cl-defmethod forge--review-create-draft
   ((_repo forge-github-repository) pr body path side line &key callback errorback)
   "Create a GitHub draft review thread at PATH SIDE LINE with BODY."
-  (forge--query pr
+  (let ((data (forge--query pr
     `(mutation
       [(input $input AddPullRequestReviewThreadInput!)]
       (addPullRequestReviewThread
@@ -1520,7 +1520,15 @@
                    (when callback
                      (funcall callback
                               (forge--github-draft-node-to-rc pr node)))))
-    :errorback errorback))
+    :errorback errorback)))
+  (when forge--query-synchronous
+    (let* ((node (car (alist-get 'nodes
+                       (alist-get 'comments
+                        (alist-get 'thread
+                         (alist-get 'addPullRequestReviewThread data)))))))
+      (when callback
+        (funcall callback
+                 (forge--github-draft-node-to-rc pr node)))))))
 
 (defun forge--github-draft-node-to-rc (pr node)
   "Map a GitHub comment NODE from addPullRequestReviewThread into a DB row.
@@ -1604,7 +1612,7 @@ Used by `forge--review-publish-pending' for both sync and async paths."
                                (if (not review-id)
                                    (when errorback
                                      (funcall errorback
-                                              (make-condition-variable "no pending review found")
+                                              '(error "no pending review found")
                                               nil nil nil))
                                  (forge--github-publish-pending--submit
                                   pr review-id callback errorback))))
@@ -1617,7 +1625,7 @@ Used by `forge--review-publish-pending' for both sync and async paths."
         (if (not review-id)
             (when errorback
               (funcall errorback
-                       (make-condition-variable "no pending review found") nil nil nil))
+                       '(error "no pending review found") nil nil nil))
           (forge--github-publish-pending--submit
            pr review-id callback errorback))))))
 

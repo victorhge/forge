@@ -2083,7 +2083,14 @@ Defined here so unit tests do not need to load the integration test file."
              :callback (lambda (rc)
                          (should (equal (oref rc their-id) "RC_new1"))
                          (should (oref rc pending-p)))
-             :errorback #'error)))))))
+             :errorback #'error)
+            ;; Verify the row was inserted into the DB (not just passed to callback).
+            (let ((rc (closql-get (forge-db)
+                                  (forge--object-id (oref pr id) "RC_new1")
+                                  'forge-pullreq-review-comment)))
+              (should rc)
+              (should (equal (oref rc their-id) "RC_new1"))
+              (should (oref rc pending-p)))))))))
 
 (ert-deftest forge-review-github-publish-pending-calls-submitPullRequestReview ()
   "forge--review-publish-pending queries review ID then calls submitPullRequestReview."
