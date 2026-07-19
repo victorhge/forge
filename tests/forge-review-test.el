@@ -2115,6 +2115,95 @@ Defined here so unit tests do not need to load the integration test file."
             (should (= (length mutations) 2))
             (should (string-match-p "submit" (downcase (format "%s" (caar mutations)))))))))))
 
+;;; Draft create / edit / publish (GitLab)
+
+(ert-deftest forge-review-gitlab-create-draft-posts-to-draft-notes ()
+  "forge--review-create-draft for GitLab POSTs to draft_notes and stores row with pending-p t."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-gl-repo))
+           (pr   (forge-test--make-gl-pullreq repo)))
+      (forge-itest--with-sync-rest
+        (let ((posted-to nil))
+          (cl-letf (((symbol-function 'forge--glab-post)
+                     (lambda (_obj resource &optional _params &rest _)
+                       (setq posted-to resource)
+                       ;; Fake draft note response.
+                       '((id . 77)
+                         (author (username . "alice"))
+                         (note . "My draft")
+                         (created_at . "2026-07-19T10:00:00Z")
+                         (updated_at . "2026-07-19T10:00:00Z")
+                         (position
+                          (new_path . "src/foo.el")
+                          (old_path . "src/foo.el")
+                          (new_line . 5)
+                          (old_line . nil))))))
+            (forge--review-create-draft
+             repo pr "My draft" "src/foo.el" 'new 5
+             :callback (lambda (rc)
+                         (should (equal (oref rc their-id) "77"))
+                         (should (oref rc pending-p)))
+             :errorback #'error)
+            (should (string-match-p "draft_notes" posted-to))))))))
+
+(ert-deftest forge-review-gitlab-publish-pending-calls-bulk-publish ()
+  "forge--review-publish-pending for GitLab POSTs to draft_notes/bulk_publish."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-gl-repo))
+           (pr   (forge-test--make-gl-pullreq repo)))
+      (forge-itest--with-sync-rest
+        (let ((path-called nil))
+          (cl-letf (((symbol-function 'forge--glab-post)
+                     (lambda (_obj resource &rest _)
+                       (setq path-called resource))))
+            (forge--review-publish-pending
+             repo pr
+             :callback (lambda (&rest _) nil)
+             :errorback #'error)
+            (should (string-match-p "bulk_publish" path-called))))))))
+
+(ert-deftest forge-review-gitlab-delete-pending-draft-uses-draft-notes-endpoint ()
+  "forge--review-delete-comment for a pending GitLab comment uses the draft_notes path."
+  (forge-test--with-db
+    ;; Use a real forge-gitlab-repository (not the test stub subclass) so the
+    ;; real method runs and we can observe which path is passed to forge--glab-delete.
+    (let* ((repo (forge-gitlab-repository
+                  :id       forge-test--gl-repo-id
+                  :forge-id "456"
+                  :forge    "gitlab.com"
+                  :owner    "alice"
+                  :name     "proj"
+                  :apihost  "gitlab.com/api/v4"
+                  :githost  "gitlab.com"))
+           (_ (oset repo condition :tracked))
+           (_ (closql-insert (forge-db) repo t))
+           (pr  (forge-pullreq
+                 :id         forge-test--gl-pr-id
+                 :repository (oref repo id)
+                 :number     42
+                 :state      'open
+                 :author     "bob"
+                 :title      "Add widget"
+                 :base-ref   "main"
+                 :base-rev   "abc000"
+                 :head-ref   "feature"
+                 :head-rev   "def999"
+                 :body       ""))
+           (_ (closql-insert (forge-db) pr t))
+           (rc  (forge-test--make-gl-review-comment pr :number 77 :pending-p t)))
+      (closql-insert (forge-db) rc t)
+      (let ((path-called nil))
+        (cl-letf (((symbol-function 'forge--glab-delete)
+                   (lambda (_obj resource &rest _)
+                     ;; resource is the raw template string with :number etc.
+                     (setq path-called resource))))
+          (forge--review-delete-comment repo pr rc)
+          (should (stringp path-called))
+          ;; The draft_notes path includes the note number (77) directly; the
+          ;; notes path would contain ":number" as a placeholder instead.
+          (should (string-match-p "draft_notes/77" path-called))
+          (should-not (string-match-p "/notes/:number" path-called)))))))
+
 ;;; Reply context stripping
 
 (ert-deftest forge-review-reply-context-html-comment-stripped ()

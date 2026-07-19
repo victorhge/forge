@@ -755,6 +755,86 @@
                    t))
                 (setq first nil)))))))))
 
+;;; Review – draft operations
+
+(defun forge--gitlab-draft-note-to-rc (pr note)
+  "Map a GitLab draft NOTE response alist into a DB row for PR.
+Inserts the row into the database and returns it."
+  (let-alist note
+    (let* ((id-str (number-to-string .id))
+           (rc     (forge-pullreq-review-comment
+                    :id            (forge--object-id (oref pr id) id-str)
+                    :their-id      id-str
+                    :discussion-id nil
+                    :number        .id
+                    :pullreq       (oref pr id)
+                    :new-path      .position.new_path
+                    :old-path      .position.old_path
+                    :new-line      .position.new_line
+                    :old-line      .position.old_line
+                    :diff-hunk     nil
+                    :outdated-p    nil
+                    :resolved-p    nil
+                    :reply-to      nil
+                    :review-state  nil
+                    :author        .author.username
+                    :body          (forge--sanitize-string .note)
+                    :created       .created_at
+                    :updated       .updated_at
+                    :reactions     nil
+                    :pending-p     t)))
+      (closql-insert (forge-db) rc t)
+      rc)))
+
+(cl-defmethod forge--review-create-draft
+  ((_repo forge-gitlab-repository) pr body path side line &key callback errorback)
+  "Create a GitLab draft note on PR at PATH SIDE LINE with BODY.
+Calls CALLBACK with the new `forge-pullreq-review-comment' on success."
+  (let* ((base-sha  (oref pr base-sha))
+         (start-sha (oref pr base-rev))
+         (head-sha  (oref pr head-rev))
+         (new-line  (and (eq side 'new) line))
+         (old-line  (and (eq side 'old) line))
+         (params    (delq nil
+                          (list (cons 'note body)
+                                (cons 'position
+                                      (delq nil
+                                            (list (cons 'base_sha      base-sha)
+                                                  (cons 'start_sha     start-sha)
+                                                  (cons 'head_sha      head-sha)
+                                                  (cons 'position_type "text")
+                                                  (cons 'new_path      path)
+                                                  (cons 'old_path      path)
+                                                  (and new-line (cons 'new_line new-line))
+                                                  (and old-line (cons 'old_line old-line))))))))
+         (resp (forge--glab-post pr
+                 "/projects/:project/merge_requests/:number/draft_notes"
+                 params
+                 :callback  (lambda (data _headers _status _req)
+                              (when callback
+                                (funcall callback
+                                         (forge--gitlab-draft-note-to-rc pr data))))
+                 :errorback errorback)))
+    (when forge--rest-synchronous
+      (when callback
+        (funcall callback (forge--gitlab-draft-note-to-rc pr resp))))))
+
+(cl-defmethod forge--review-edit-draft
+  ((_repo forge-gitlab-repository) pr rc body &key callback errorback)
+  "Edit the body of GitLab draft note RC to BODY."
+  (let ((resp (forge--glab-put pr
+                (format "/projects/:project/merge_requests/:number/draft_notes/%s"
+                        (oref rc number))
+                (list (cons 'note body))
+                :callback  (lambda (_data _headers _status _req)
+                             (oset rc body body)
+                             (when callback (funcall callback rc)))
+                :errorback errorback)))
+    (ignore resp)
+    (when forge--rest-synchronous
+      (oset rc body body)
+      (when callback (funcall callback rc)))))
+
 ;;; Review – write operations
 
 (cl-defmethod forge--review-submit ((_repo forge-gitlab-repository) pr)
@@ -829,11 +909,19 @@
     :callback callback :errorback errorback))
 
 (cl-defmethod forge--review-delete-comment
-  ((_repo forge-gitlab-repository) _pr rc &key callback errorback)
-  "DELETE a submitted review comment RC from GitLab."
-  (forge--glab-delete rc
-    "/projects/:project/merge_requests/:topic/notes/:number" nil
-    :callback callback :errorback errorback))
+  ((_repo forge-gitlab-repository) pr rc &key callback errorback)
+  "DELETE a review comment RC from GitLab.
+For pending draft notes uses the draft_notes endpoint; for submitted
+notes uses the notes endpoint."
+  (if (oref rc pending-p)
+      (forge--glab-delete pr
+        (format "/projects/:project/merge_requests/:number/draft_notes/%s"
+                (oref rc number))
+        nil
+        :callback callback :errorback errorback)
+    (forge--glab-delete rc
+      "/projects/:project/merge_requests/:topic/notes/:number" nil
+      :callback callback :errorback errorback)))
 
 (cl-defmethod forge--review-post-comment
   ((_repo forge-gitlab-repository) pr body path side line &key callback errorback)
@@ -850,6 +938,14 @@
                                       (cons 'old_path  (or path ""))
                                       (and (eq side 'new) (cons 'new_line line))
                                       (and (eq side 'old) (cons 'old_line line))))))
+    :callback callback :errorback errorback))
+
+(cl-defmethod forge--review-publish-pending
+  ((_repo forge-gitlab-repository) pr &key callback errorback)
+  "Publish all GitLab draft notes on PR via bulk_publish."
+  (forge--glab-post pr
+    "/projects/:project/merge_requests/:number/draft_notes/bulk_publish"
+    nil
     :callback callback :errorback errorback))
 
 (cl-defmethod forge--submit-add-review-reply
