@@ -161,20 +161,14 @@ Calls CALLBACK with the new comment node as its sole argument on success.")
 ;;; Discard
 
 (defun forge-discard-review-comment (rc)
-  "Delete review comment RC from the database and the forge API.
-For pending (not-yet-submitted) comments only the local DB row is
-removed.  For submitted comments the forge API is called first."
-  (if (oref rc pending-p)
-      (progn
-        (closql-delete rc)
-        (forge-refresh-buffer))
-    (when-let* ((pr   (closql-get (forge-db) (oref rc pullreq) 'forge-pullreq))
-                (repo (forge-get-repository pr)))
-      (forge--review-delete-comment repo pr rc
-        :callback  (lambda (&rest _)
-                     (closql-delete rc)
-                     (forge-refresh-buffer))
-        :errorback (forge--post-submit-errorback)))))
+  "Delete review comment RC from the forge API and the local database."
+  (when-let* ((pr   (closql-get (forge-db) (oref rc pullreq) 'forge-pullreq))
+              (repo (forge-get-repository pr)))
+    (forge--review-delete-comment repo pr rc
+      :callback  (lambda (&rest _)
+                   (closql-delete rc)
+                   (forge-refresh-buffer))
+      :errorback (forge--post-submit-errorback))))
 
 ;;; Display – Section class with heading slot
 

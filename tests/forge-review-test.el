@@ -1180,17 +1180,24 @@ Regression: the predicate previously required ch=?+ so context lines were never 
         (should (string-match-p "pulls/comments/777" (plist-get req :resource))))
       (should-not (closql-get (forge-db) "rc-1" 'forge-pullreq-review-comment)))))
 
-(ert-deftest forge-review-write-discard-pending-no-api-call ()
-  "Discarding a pending comment removes the DB row without calling the API."
+(ert-deftest forge-review-discard-pending-calls-api ()
+  "Discarding a pending comment (pending-p t) calls forge--review-delete-comment."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
            (pr   (forge-test--make-pullreq repo))
-           (rc   (forge-test--make-review-comment pr :pending-p t)))
+           (rc   (forge-test--make-review-comment
+                  pr :pending-p t :their-id "RC_node1" :number 201))
+           (delete-called nil))
       (closql-insert (forge-db) rc t)
-      (setq forge-test--last-request nil)
-      (forge-discard-review-comment rc)
-      (should-not forge-test--last-request)
-      (should-not (closql-get (forge-db) "rc-1" 'forge-pullreq-review-comment)))))
+      (cl-letf (((symbol-function 'forge--review-delete-comment)
+                 (lambda (&rest args)
+                   (setq delete-called t)
+                   (let ((cb (cadr (memq :callback args))))
+                     (when cb (funcall cb nil nil nil nil))))))
+        (forge-discard-review-comment rc))
+      (should delete-called)
+      (should (null (closql-get (forge-db) (oref rc id)
+                                'forge-pullreq-review-comment))))))
 
 (ert-deftest forge-review-write-gitlab-delete-comment-calls-api ()
   "Deleting a GitLab comment sends DELETE to the notes endpoint."
