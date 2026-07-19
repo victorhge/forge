@@ -407,11 +407,15 @@ Writes the DB row in the callback once the server responds with a real ID."
                        (t               'new)))
          (line   (cond (context-p       (alist-get 'new result))
                        (t               (cdr result)))))
-    (forge--review-create-draft repo pr body path side line
-      :callback  (lambda (_rc)
-                   (forge-refresh-buffer forge--pre-post-buffer)
-                   (magit-mode-bury-buffer 'kill))
-      :errorback (forge--post-submit-errorback))))
+    (let ((prevbuf forge--pre-post-buffer)
+          (editbuf (current-buffer)))
+      (forge--review-create-draft repo pr body path side line
+        :callback  (lambda (_rc)
+                     (forge-refresh-buffer prevbuf)
+                     (when (buffer-live-p editbuf)
+                       (with-current-buffer editbuf
+                         (magit-mode-bury-buffer 'kill))))
+        :errorback (forge--post-submit-errorback)))))
 
 (defun forge-review--save-comment-edit (_repo _post)
   "Save edits to the current review comment."
