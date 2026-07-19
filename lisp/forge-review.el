@@ -147,6 +147,17 @@ CALLBACK is called on success; ERRORBACK on failure.")
   "Post BODY as a single immediate inline comment at PATH SIDE LINE.
 CALLBACK is called on success; ERRORBACK on failure.")
 
+(cl-defgeneric forge--review-create-draft (repo pr body path side line
+                                            &key callback errorback)
+  "Create a server-side draft review comment on PR at PATH SIDE LINE with BODY.
+Calls CALLBACK with the new comment node as its sole argument on success.")
+
+(cl-defgeneric forge--review-edit-draft (repo pr rc body &key callback errorback)
+  "Edit the body of draft review comment RC on PR to BODY.")
+
+(cl-defgeneric forge--review-publish-pending (repo pr &key callback errorback)
+  "Publish all pending (draft) review comments on PR as a batch COMMENT review.")
+
 ;;; Discard
 
 (defun forge-discard-review-comment (rc)
