@@ -2145,6 +2145,28 @@ Defined here so unit tests do not need to load the integration test file."
       (should create-called)
       (should publish-called))))
 
+(ert-deftest forge-review-gitlab-pull-fetches-draft-notes ()
+  "Pulling a GitLab MR fetches /draft_notes and stores rows with pending-p t."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-gl-repo))
+           (pr   (forge-test--make-gl-pullreq repo))
+           (draft-note '((id . 55)
+                         (author (username . "carol"))
+                         (note . "Draft body")
+                         (created_at . "2026-07-19T09:00:00Z")
+                         (updated_at . "2026-07-19T09:00:00Z")
+                         (position
+                          (new_path . "src/bar.el")
+                          (old_path . "src/bar.el")
+                          (new_line . 10)
+                          (old_line . nil)))))
+      (forge--update-pullreq-draft-notes repo pr (list draft-note))
+      (let* ((all     (oref pr review-comments))
+             (pending (seq-filter (lambda (rc) (oref rc pending-p)) all)))
+        (should (= (length pending) 1))
+        (should (equal (oref (car pending) their-id) "55"))
+        (should (equal (oref (car pending) body) "Draft body"))))))
+
 ;;; _
 
 (provide 'forge-review-test)

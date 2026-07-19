@@ -375,6 +375,12 @@
                          .discussions)))
             (when inline
               (forge--update-pullreq-review-comments repo pullreq inline))))
+        ;; After updating submitted review comments, fetch draft notes for the current user.
+        (forge--rest pullreq "GET"
+          "/projects/:project/merge_requests/:number/draft_notes"
+          nil
+          :callback (lambda (data _headers _status _req)
+                      (forge--update-pullreq-draft-notes repo pullreq data)))
         (let ((until (oref repo pullreqs-until)))
           (when (or (not until) (string> .updated_at until))
             (oset repo pullreqs-until .updated_at)))
@@ -754,6 +760,13 @@
                     :pending-p    nil)
                    t))
                 (setq first nil)))))))))
+
+(cl-defmethod forge--update-pullreq-draft-notes
+  ((_repo forge-gitlab-repository) pr notes)
+  "Map GitLab draft NOTES into DB rows for PR with pending-p t."
+  (closql-with-transaction (forge-db)
+    (dolist (note notes)
+      (forge--gitlab-draft-note-to-rc pr note))))
 
 ;;; Review – draft operations
 

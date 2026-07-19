@@ -53,6 +53,9 @@
 (cl-defgeneric forge--update-pullreq-review-comments (repo pr threads)
   "Map API THREADS (review threads or discussions) into DB rows for PR.")
 
+(cl-defgeneric forge--update-pullreq-draft-notes (repo pr notes)
+  "Map draft NOTES (pending review comments) into DB rows for PR with pending-p t.")
+
 
 ;;; Diff Line-Number Computation
 
