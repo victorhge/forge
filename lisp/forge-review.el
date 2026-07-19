@@ -390,37 +390,28 @@ Clears any existing overlays first, then places fresh ones."
   "C-c C-k"                    #'forge-discard-review-comment-at-point
   "C-c C-r"                    #'forge-reply-to-review-comment)
 
-(defun forge-review--stage-comment (_repo _post)
-  "Stage a new pending inline review comment from the current post buffer."
-  (let* ((pr      forge--buffer-post-object)
-         (body    (forge--clear-comment-input (buffer-string)))
-         (result  (with-current-buffer forge--pre-post-buffer
-                    (forge--diff-line-number-at-point)))
-         (path    (with-current-buffer forge--pre-post-buffer
-                    (forge--diff-file-at-point)))
-         ;; result shape: (new . N) | (old . N) | ((old . N) (new . N))
+(defun forge-review--stage-comment (repo post)
+  "Stage a new draft inline review comment via the forge API.
+Reads body and diff-line context from the current post buffer.
+Writes the DB row in the callback once the server responds with a real ID."
+  (let* ((pr     (if (forge--childp post 'forge-pullreq) post
+                   forge--buffer-post-object))
+         (body   (forge--clear-comment-input (buffer-string)))
+         (result (with-current-buffer forge--pre-post-buffer
+                   (forge--diff-line-number-at-point)))
+         (path   (with-current-buffer forge--pre-post-buffer
+                   (forge--diff-file-at-point)))
          (context-p (and result (consp (car result))))
-         (rc      (forge-pullreq-review-comment
-                   :id           (forge--object-id (oref pr id) (format "pending-%s" (float-time)))
-                   :their-id     nil
-                   :discussion-id nil
-                   :number       0
-                   :pullreq      (oref pr id)
-                   :new-path     (and result (not (eq (car result) 'old)) path)
-                   :old-path     (and result (eq (car result) 'old) path)
-                   :new-line     (cond (context-p (alist-get 'new result))
-                                       ((eq (car result) 'new) (cdr result)))
-                   :old-line     (cond (context-p (alist-get 'old result))
-                                       ((eq (car result) 'old) (cdr result)))
-                   :diff-hunk    nil
-                   :outdated-p   nil
-                   :resolved-p   nil
-                   :reply-to     nil
-                   :review-state nil
-                   :body         body
-                   :pending-p    t)))
-    (closql-insert (forge-db) rc t)
-    (forge-refresh-buffer forge--pre-post-buffer)))
+         (side   (cond (context-p       'new)
+                       ((eq (car result) 'old) 'old)
+                       (t               'new)))
+         (line   (cond (context-p       (alist-get 'new result))
+                       (t               (cdr result)))))
+    (forge--review-create-draft repo pr body path side line
+      :callback  (lambda (_rc)
+                   (forge-refresh-buffer forge--pre-post-buffer)
+                   (magit-mode-bury-buffer 'kill))
+      :errorback (forge--post-submit-errorback))))
 
 (defun forge-review--save-comment-edit (_repo _post)
   "Save edits to the current review comment."

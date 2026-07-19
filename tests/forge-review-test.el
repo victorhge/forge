@@ -1304,11 +1304,34 @@ and sets resolved-p nil in the DB."
                                           'forge-pullreq-review-comment)
                               resolved-p))))))))
 
-(ert-deftest forge-review-write-stage-comment-inserts-pending-row ()
-  "`forge-review--stage-comment' inserts a pending row with the correct slots."
+(ert-deftest forge-review-stage-comment-calls-create-draft-api ()
+  "`forge-review--stage-comment' calls forge--review-create-draft, not local insert."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
-           (pr   (forge-test--make-pullreq repo)))
+           (pr   (forge-test--make-pullreq repo))
+           (api-called nil))
+      (forge-itest--with-sync-rest
+        (forge-test--with-diff-buffer
+            "--- a/src/foo.el\n+++ b/src/foo.el\n@@ -1,3 +1,3 @@\n line\n-old\n+new\n"
+          (forward-line 3)  ; land on the +new line
+          (cl-letf (((symbol-function 'forge--review-create-draft)
+                     (lambda (&rest _)
+                       (setq api-called t))))
+            (with-temp-buffer
+              (forge-post-mode)
+              (setq forge--buffer-post-object pr)
+              (setq forge--pre-post-buffer (current-buffer))
+              (insert "My staged comment")
+              (forge-review--stage-comment
+               repo pr)))))
+      (should api-called))))
+
+(ert-deftest forge-review-write-stage-comment-calls-api-with-correct-args ()
+  "`forge-review--stage-comment' calls forge--review-create-draft with the correct arguments."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           (call-args nil))
       (with-temp-buffer
         (insert forge-test--simple-diff)
         (diff-mode)
@@ -1320,21 +1343,23 @@ and sets resolved-p nil in the DB."
             (insert "A pending comment")
             (setq-local forge--buffer-post-object pr)
             (setq-local forge--pre-post-buffer diff-buf)
-            (forge-review--stage-comment nil nil))))
-      (let* ((all (oref pr review-comments))
-             (rc  (car all)))
-        (should (= (length all) 1))
-        (should (eq (oref rc pending-p) t))
-        (should (equal (oref rc body) "A pending comment"))
-        (should (eq (oref rc new-line) 9))
-        (should (equal (oref rc new-path) "src/foo.el")))))
+            (cl-letf (((symbol-function 'forge--review-create-draft)
+                       (lambda (&rest args) (setq call-args args))))
+              (forge-review--stage-comment repo pr)))))
+      ;; Verify the API was called with the right args.
+      (should call-args)
+      (should (equal (nth 2 call-args) "A pending comment"))
+      (should (equal (nth 3 call-args) "src/foo.el"))
+      (should (eq (nth 4 call-args) 'new))
+      (should (eq (nth 5 call-args) 9)))))
 
 (ert-deftest forge-review-write-stage-comment-context-line ()
-  "`forge-review--stage-comment' on a context line stores both new-line and old-line.
-Regression: (car result) was a cons cell, not a symbol, so both lines were stored as nil."
+  "`forge-review--stage-comment' on a context line calls forge--review-create-draft with side=new.
+Regression: (car result) was a cons cell, not a symbol, so the new line number was resolved as nil."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
-           (pr   (forge-test--make-pullreq repo)))
+           (pr   (forge-test--make-pullreq repo))
+           (call-args nil))
       (with-temp-buffer
         (insert forge-test--simple-diff)
         (diff-mode)
@@ -1346,20 +1371,22 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
             (insert "Context line comment")
             (setq-local forge--buffer-post-object pr)
             (setq-local forge--pre-post-buffer diff-buf)
-            (forge-review--stage-comment nil nil))))
-      (let* ((rc (car (oref pr review-comments))))
-        (should-not (null rc))
-        ;; context-line-8 is old=8 new=8; both must be stored
-        (should (eq (oref rc new-line) 8))
-        (should (eq (oref rc old-line) 8))
-        (should (equal (oref rc new-path) "src/foo.el")))))))
+            (cl-letf (((symbol-function 'forge--review-create-draft)
+                       (lambda (&rest args) (setq call-args args))))
+              (forge-review--stage-comment repo pr)))))
+      ;; context-line-8 is old=8 new=8; side=new, line=8 (new-side line number)
+      (should call-args)
+      (should (eq (nth 4 call-args) 'new))
+      (should (eq (nth 5 call-args) 8))
+      (should (equal (nth 3 call-args) "src/foo.el")))))
 
 (ert-deftest forge-review-write-stage-comment-dispatch-protocol ()
   "`forge-review--stage-comment' accepts the two-arg (repo post) protocol used by
 `forge-post-submit' — verifies arity is not wrong-number-of-arguments."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
-           (pr   (forge-test--make-pullreq repo)))
+           (pr   (forge-test--make-pullreq repo))
+           (api-called nil))
       (with-temp-buffer
         (insert forge-test--simple-diff)
         (diff-mode)
@@ -1371,12 +1398,12 @@ Regression: (car result) was a cons cell, not a symbol, so both lines were store
             (insert "Dispatch protocol test")
             (setq-local forge--buffer-post-object pr)
             (setq-local forge--pre-post-buffer diff-buf)
-            ;; Call through the two-arg protocol, not directly
-            (forge-test--invoke-submit-fn #'forge-review--stage-comment repo pr))))
-      (let* ((all (oref pr review-comments)))
-        (should (= (length all) 1))
-        (should (eq (oref (car all) pending-p) t))
-        (should (equal (oref (car all) body) "Dispatch protocol test"))))))
+            (cl-letf (((symbol-function 'forge--review-create-draft)
+                       (lambda (&rest _) (setq api-called t))))
+              ;; Call through the two-arg protocol, not directly
+              (forge-test--invoke-submit-fn #'forge-review--stage-comment repo pr)))))
+      ;; The two-arg dispatch protocol invoked forge--review-create-draft without error.
+      (should api-called))))
 
 (ert-deftest forge-review-write-save-comment-edit-dispatch-protocol ()
   "`forge-review--save-comment-edit' accepts the two-arg (repo post) protocol."
@@ -1562,10 +1589,11 @@ there are no pending comments — avoids spurious API round-trips."
 ;; because they go through the same code path a user triggers with C-c C-c.
 
 (ert-deftest forge-review-regression-stage-comment-via-forge-post-stage ()
-  "`forge-post-stage' stages a pending comment without signalling wrong-number-of-arguments."
+  "`forge-post-stage' calls the API without signalling wrong-number-of-arguments."
   (forge-test--with-db
     (let* ((repo (forge-test--make-repo))
-           (pr   (forge-test--make-pullreq repo)))
+           (pr   (forge-test--make-pullreq repo))
+           (api-called nil))
       (with-temp-buffer
         (insert forge-test--simple-diff)
         (diff-mode)
@@ -1576,10 +1604,12 @@ there are no pending comments — avoids spurious API round-trips."
           (forge-test--with-post-buffer #'forge--submit-add-single-review-comment pr
             (insert "Regression test body")
             (setq-local forge--pre-post-buffer diff-buf)
-            (should-not (condition-case err
-                            (progn (forge-post-stage) nil)
-                          (wrong-number-of-arguments err))))))
-      (should (= (length (oref pr review-comments)) 1)))))
+            (cl-letf (((symbol-function 'forge--review-create-draft)
+                       (lambda (&rest _) (setq api-called t))))
+              (should-not (condition-case err
+                              (progn (forge-post-stage) nil)
+                            (wrong-number-of-arguments err)))))))
+      (should api-called))))
 
 (ert-deftest forge-review-regression-save-comment-edit-via-forge-post-submit ()
   "Calling `forge-post-submit' with forge-review--save-comment-edit must not
