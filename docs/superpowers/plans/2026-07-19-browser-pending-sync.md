@@ -2,53 +2,54 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make forge correctly handle GitHub review comments that were created in the browser but not yet submitted — storing them as local pending comments so the existing stage/submit/discard machinery works on them.
+**Goal:** Unify the pending/non-pending review comment lifecycle so create, edit, and delete always go through the forge API immediately; `pending-p` becomes a server-side state flag only. Add batch publish as the one unique pending operation. Support GitHub and GitLab backends.
 
-**Architecture:** The root cause is that `forge--update-pullreq-review-comments` hardcodes `:pending-p nil` for every pulled comment, ignoring GitHub's `pullRequestReview.state = "PENDING"`. Since pending comments are author-only (GitHub API returns them only to the review author), any `PENDING` comment forge pulls belongs to the current user. The fix has three parts: (1) set `pending-p t` when `state = pending` during pull mapping; (2) fix the submit path so it submits the *existing* GitHub pending review (via `submitPullRequestReview`) rather than creating a new one (via `addPullRequestReview`) when browser-drafted comments are present; (3) fix the discard path so discarding a browser-pending comment deletes it via the API using its real `their-id` before removing the local row, rather than treating it as a locally-only-staged comment. GitLab has no API-level pending concept, so no GitLab changes are needed.
+**Architecture:** Currently `forge-post-stage` writes a local-only DB row with no API call and `their-id nil`. The new design: staging calls the API to create a server-side draft comment (GitHub: `addPullRequestReviewThread`; GitLab: `POST .../draft_notes`), writes the DB row in the callback with the real `their-id`, and sets `pending-p t`. Edit and delete then share the same API paths as submitted comments. The post buffer gains a third action — "stage + publish batch" — available when the PR already has pending comments. `forge-submit-pending-review` (publish from topic buffer) is unchanged. Browser-pending comments pulled from GitHub/GitLab are stored with `pending-p t` and their real `their-id`, so they slot directly into this model.
 
-**Tech Stack:** Emacs Lisp, EIEIO, closql/emacsql, GitHub GraphQL API, ERT test suite.
+**Tech Stack:** Emacs Lisp, EIEIO, closql/emacsql, GitHub GraphQL API, GitLab REST API, ERT test suite.
 
 ## Global Constraints
 
-- Run `make test` (ERT suite, `tests/forge-review-test.el`) after every task — all 92+ tests must pass.
+- Run `make test` after every task — all tests must pass.
 - Never call `ghub-request` directly; use `forge--rest` / `forge--query`.
-- New slot columns appended to end of `forge-pullreq` slot list only — no schema version bump needed here (we are modifying `forge-pullreq-review-comment` mapping logic, not the DB schema).
-- `pending-p` on a row means "user owns this comment and it has not been submitted to the forge API." Browser-drafted comments pulled from GitHub satisfy this exactly.
-- All write-method callbacks follow the `(:callback ... :errorback (forge--post-submit-errorback))` protocol.
-- Dispatch pattern: generics declared in `forge-review.el`, methods implemented in `forge-github.el`. No `if (github-p repo)` guards in `forge-review.el`.
-- `forge-pullreq-review-comment` slots: `id their-id discussion-id number pullreq new-path old-path new-line old-line diff-hunk outdated-p resolved-p reply-to review-state author body created updated reactions pending-p` (see `forge-db.el` lines 480–504 and `forge-review.el` lines 26–50).
+- All write-method callbacks follow `(:callback ... :errorback (forge--post-submit-errorback))`.
+- Dispatch pattern: generics in `forge-review.el`, methods in `forge-github.el` / `forge-gitlab.el`.
+- No `if (github-p repo)` guards in `forge-review.el`.
+- `pending-p t` means: comment exists on the server as a draft, authored by the current user, not yet published. `their-id` is always non-nil on pending rows after this plan.
+- `forge-pullreq-review-comment` slots (DB column order must not change): `id their-id discussion-id number pullreq new-path old-path new-line old-line diff-hunk outdated-p resolved-p reply-to review-state author body created updated reactions pending-p`.
 
 ---
 
-## Background: The Three Scenarios
+## The Three Comment Kinds (post-plan)
 
-After this plan, there are three kinds of review comment rows:
+| Kind | `pending-p` | `their-id` | Meaning |
+|---|---|---|---|
+| **Draft / pending** | `t` | non-nil | Server-side draft; author-only visible |
+| **Submitted** | `nil` | non-nil | Published; visible to all |
 
-| Kind | `pending-p` | `their-id` | `discussion-id` | Meaning |
-|---|---|---|---|---|
-| **Locally staged** | `t` | `nil` | `nil` | Typed in forge, not yet sent to API |
-| **Browser-pending** | `t` | non-nil node ID | non-nil thread ID | Authored in browser, review not submitted |
-| **Submitted** | `nil` | non-nil node ID | non-nil thread ID | Visible to all reviewers |
+There is no longer a "locally staged only" kind. Every row in the DB has a real `their-id`.
 
-The distinction between locally-staged and browser-pending is detectable via `their-id`: locally staged rows always have `their-id nil`; browser-pending rows have a real GitHub node ID.
+## Post Buffer Actions
+
+| Key | Action | When available |
+|---|---|---|
+| `C-c C-c` | Submit immediately as single standalone comment | Always |
+| `C-s` | Stage as server-side draft | Always (for `new-review-comment`) |
+| `C-c C-p` (new) | Stage as draft + publish entire pending batch | Only when PR already has pending comments |
 
 ---
 
-### Task 1: Set `pending-p t` for GitHub browser-pending comments during pull
+### Task 1: Pull mapping — store browser-pending comments with `pending-p t`
 
-**What changes:** `forge-github.el` — `forge--update-pullreq-review-comments` method.
+This is a prerequisite. Pulled comments with `pullRequestReview.state = "PENDING"` (GitHub) belong to the current user and must be stored with `pending-p t`. GitLab draft notes are fetched separately (Task 6).
 
 **Files:**
-- Modify: `lisp/forge-github.el` (around line 1420)
+- Modify: `lisp/forge-github.el` (line ~1420)
 - Test: `tests/forge-review-test.el`
-
-**Interfaces:**
-- Consumes: `state2` local variable (already computed at line 1394 as `(intern (downcase ...))` — value `'pending` when GitHub returns `"PENDING"`)
-- Produces: DB rows with `pending-p t` when `state2 == 'pending`, `pending-p nil` otherwise
 
 - [ ] **Step 1: Write a failing test**
 
-  In `tests/forge-review-test.el`, after the existing `forge-review-api-github-review-state-stored` test (around line 839), add:
+  In `tests/forge-review-test.el`, after `forge-review-api-github-review-state-stored` (line ~839):
 
   ```elisp
   (ert-deftest forge-review-api-github-pending-review-state-sets-pending-p ()
@@ -57,34 +58,32 @@ The distinction between locally-staged and browser-pending is detectable via `th
       (let* ((repo    (forge-test--make-repo))
              (pr      (forge-test--make-pullreq repo))
              (payload (copy-tree forge-test--github-thread-payload)))
-        ;; Override review state to PENDING on both comments in the thread.
-        (setf (alist-get 'state (alist-get 'pullRequestReview (nth 0 (alist-get 'comments payload))))
-              "PENDING")
-        (setf (alist-get 'state (alist-get 'pullRequestReview (nth 1 (alist-get 'comments payload))))
-              "PENDING")
+        (setf (alist-get 'state (alist-get 'pullRequestReview
+                                  (nth 0 (alist-get 'comments payload)))) "PENDING")
+        (setf (alist-get 'state (alist-get 'pullRequestReview
+                                  (nth 1 (alist-get 'comments payload)))) "PENDING")
         (forge--update-pullreq-review-comments repo pr (list payload))
         (let* ((all    (oref pr review-comments))
                (opener (seq-find (lambda (c) (null (oref c reply-to))) all))
                (reply  (seq-find (lambda (c) (oref c reply-to)) all)))
           (should (eq (oref opener pending-p) t))
           (should (eq (oref reply   pending-p) t))
-          ;; their-id must be preserved — these are browser-pending, not locally staged.
           (should (equal (oref opener their-id) "RC_node1"))
           (should (equal (oref reply  their-id) "RC_node2"))))))
   ```
 
-- [ ] **Step 2: Run the failing test**
+- [ ] **Step 2: Run to confirm failure**
 
   ```sh
   cd /home/Build/yren/.emacs.d/elpa/forge
-  make test 2>&1 | grep -E "FAILED|PASSED|forge-review-api-github-pending"
+  make test 2>&1 | grep -E "forge-review-api-github-pending"
   ```
 
-  Expected: `forge-review-api-github-pending-review-state-sets-pending-p  FAILED`
+  Expected: `FAILED`
 
-- [ ] **Step 3: Implement the fix**
+- [ ] **Step 3: Implement**
 
-  In `lisp/forge-github.el`, locate line 1420 (the `:pending-p nil` line inside `forge--update-pullreq-review-comments`). Change:
+  In `lisp/forge-github.el` line ~1420, change:
 
   ```elisp
                       :pending-p    nil)
@@ -96,601 +95,1051 @@ The distinction between locally-staged and browser-pending is detectable via `th
                       :pending-p    (eq state2 'pending))
   ```
 
-- [ ] **Step 4: Run the full test suite**
+- [ ] **Step 4: Run full suite**
 
   ```sh
   make test 2>&1 | tail -5
   ```
 
-  Expected: all tests pass (no FAILED lines).
+  Expected: all pass.
 
 - [ ] **Step 5: Commit**
 
   ```sh
   git add lisp/forge-github.el tests/forge-review-test.el
-  git commit -m "fix: set pending-p t for browser-pending GitHub review comments on pull"
+  git commit -m "fix: store browser-pending GitHub review comments with pending-p t on pull"
   ```
 
 ---
 
-### Task 2: Fix the submit path — use `submitPullRequestReview` when browser-pending comments exist
+### Task 2: New generics for draft create, edit, delete, publish
 
-**Context:** Currently `forge--review-submit` (GitHub) always calls `addPullRequestReview` with new thread inputs. But if the user already has an in-progress pending review on GitHub (browser-drafted comments), those comments are *already attached to an existing review node* on GitHub. Calling `addPullRequestReview` again creates a *second* review, leaving the browser-drafted threads as a separate unsubmitted review. The correct approach is to detect browser-pending rows (those with non-nil `their-id`) and submit the *existing* review via `submitPullRequestReview` (using the review's node ID), then separately send any locally-staged threads (nil `their-id`) either by adding them to the existing review first or by submitting them as a separate review.
-
-The simplest correct implementation: if there are browser-pending rows, look up the review node ID from the first one's `pullRequestReview` context — but that isn't stored. Instead, use GitHub's `submitPullRequestReview` mutation which takes `(pullRequestId, event, body)` and no thread list; it submits *all pending threads already on the review*. Then send locally-staged (nil `their-id`) threads as a new `addPullRequestReview` afterwards, or bundle them in advance.
-
-**Practical design decision:** The cleanest path is:
-
-1. Split pending rows into `browser-pending` (non-nil `their-id`) and `local-staged` (nil `their-id`).
-2. If `browser-pending` is non-empty: first add any `local-staged` threads to the existing review using `addPullRequestReviewThread` (the same mutation used by `forge-add-single-review-comment`), *then* call `submitPullRequestReview`. If `browser-pending` is empty: use the existing `addPullRequestReview` path (unchanged).
-3. After the final submit mutation's callback: flush all pending rows and re-pull topic.
-
-However, `submitPullRequestReview` needs the *review node ID*, which we don't store. We need to query it. GitHub GraphQL: `pullRequest { reviews(last: 1, states: [PENDING]) { nodes { id } } }`.
-
-To keep the scope of this task bounded, we store the pending review node ID as a new slot `pending-review-id` on `forge-pullreq`, populated during pull when PENDING comments are present. That requires a DB schema bump only if we add the column; since `base-sha` and `review-comments` were appended via `ALTER TABLE` at the end of the slot list, we follow the same pattern.
+Declare all four operations in `forge-review.el`. This is the interface contract the backends implement.
 
 **Files:**
-- Modify: `lisp/forge-review.el` — add `pending-review-id` slot to `forge-pullreq-review-comment`? No — store it on the `forge-pullreq` object to reflect that it's review-level, not comment-level.
+- Modify: `lisp/forge-review.el`
 
-  Actually: rather than a schema change, we can derive the review node ID at submit time by querying GitHub. This avoids a schema version bump.
+- [ ] **Step 1: Add generic declarations**
 
-  **Revised approach (no schema change):**
-  - Add a new `cl-defgeneric forge--review-fetch-pending-review-id (repo pr &key callback errorback)` in `forge-review.el`.
-  - In `forge-github.el`: implement this generic. It first queries for the existing pending review ID via GraphQL, then (a) adds each local-staged thread via `addPullRequestReviewThread` sequentially, then (b) calls `submitPullRequestReview`.
-  - Adjust `forge--review-submit` (GitHub) to call this new path when browser-pending rows exist.
+  In `lisp/forge-review.el`, replace the existing `forge--review-submit` generic and the `cl-defgeneric` for `forge--review-delete-comment`, `forge--review-post-comment`, `forge--review-post-reply` with this complete set. Keep all existing generics and add the new ones after `forge--review-submit`:
 
-  Actually the simplest correct solution: query the pending review ID at submit time with a single GraphQL call, then proceed. The query is:
+  ```elisp
+  (cl-defgeneric forge--review-create-draft (repo pr body path side line
+                                              &key callback errorback)
+    "Create a server-side draft review comment on PR at PATH SIDE LINE with BODY.
+  Calls CALLBACK with the new comment node as its sole argument on success.")
 
-  ```graphql
-  query ($id: ID!) {
-    node(id: $id) {
-      ... on PullRequest {
-        reviews(last: 1, states: [PENDING]) { nodes { id } }
-      }
-    }
-  }
+  (cl-defgeneric forge--review-edit-draft (repo pr rc body &key callback errorback)
+    "Edit the body of draft review comment RC on PR to BODY.")
+
+  (cl-defgeneric forge--review-publish-pending (repo pr &key callback errorback)
+    "Publish all pending (draft) review comments on PR as a batch COMMENT review.")
   ```
 
-  Where `$id = (oref pr their-id)`.
+  Note: `forge--review-delete-comment` already exists and covers both draft and submitted comments — no new generic needed for delete.
+
+- [ ] **Step 2: No tests needed here** (generics with no default body cannot be tested in isolation; each backend task tests its implementation).
+
+- [ ] **Step 3: Commit**
+
+  ```sh
+  git add lisp/forge-review.el
+  git commit -m "feat: declare forge--review-create-draft/edit-draft/publish-pending generics"
+  ```
+
+---
+
+### Task 3: GitHub backend — implement draft create, edit, publish
 
 **Files:**
-- Modify: `lisp/forge-review.el` (add generic declaration)
-- Modify: `lisp/forge-github.el` (`forge--review-submit` method and new helper)
+- Modify: `lisp/forge-github.el`
 - Test: `tests/forge-review-test.el`
 
 **Interfaces:**
-- Consumes (Task 1): `pending-p t` rows split by `their-id` nil vs non-nil
-- Produces: `submitPullRequestReview` mutation called when browser-pending rows exist; `addPullRequestReview` called only for purely-local pending rows
+- `forge--review-create-draft`: uses `addPullRequestReviewThread` mutation (same as `forge--review-post-comment`) but the PR must have an in-progress review. GitHub creates one automatically on first call.
+- `forge--review-edit-draft`: uses `updatePullRequestReviewComment` mutation with `(oref rc their-id)`.
+- `forge--review-publish-pending`: uses `submitPullRequestReview` mutation. Needs the pending review node ID — query with `reviews(last:1 states:[PENDING])`.
+- `forge--review-delete-comment` already uses `deletePullRequestReviewComment` — works for draft comments too, no change needed.
 
-- [ ] **Step 1: Write a failing test for the browser-pending submit path**
+- [ ] **Step 1: Write failing tests**
 
-  In `tests/forge-review-test.el`, add after the existing `forge-review-github-submit-pending` test:
+  In `tests/forge-review-test.el`:
 
   ```elisp
-  (ert-deftest forge-review-github-submit-with-browser-pending ()
-    "When browser-pending rows exist, submit queries for review ID then calls submitPullRequestReview."
+  (ert-deftest forge-review-github-create-draft-calls-addPullRequestReviewThread ()
+    "forge--review-create-draft calls addPullRequestReviewThread and stores row with pending-p t."
+    (forge-test--with-db
+      (let* ((repo (forge-test--make-repo))
+             (pr   (forge-test--make-pullreq repo)))
+        (forge-itest--with-sync-rest
+          (let ((called-with nil))
+            (cl-letf (((symbol-function 'forge--query)
+                       (lambda (_obj _query vars &rest _)
+                         (setq called-with vars)
+                         ;; Fake response: new thread with one comment node.
+                         '((addPullRequestReviewThread
+                            (thread
+                             (comments
+                              (nodes ((id . "RC_new1")
+                                      (databaseId . 999)
+                                      (pullRequestReview (id . "PRR_rev1"))
+                                      (author (login . "alice"))
+                                      (body . "My draft")
+                                      (createdAt . "2026-07-19T10:00:00Z")
+                                      (updatedAt . "2026-07-19T10:00:00Z")
+                                      (reactionGroups . nil)
+                                      (diffHunk . "")
+                                      (position . 5))))))))))
+              (forge--review-create-draft
+               repo pr "My draft" "src/foo.el" 'new 5
+               :callback (lambda (rc)
+                           (should (equal (oref rc their-id) "RC_new1"))
+                           (should (oref rc pending-p)))
+               :errorback #'error)))))))
+
+  (ert-deftest forge-review-github-publish-pending-calls-submitPullRequestReview ()
+    "forge--review-publish-pending queries review ID then calls submitPullRequestReview."
     (forge-test--with-db
       (let* ((repo (forge-test--make-repo))
              (pr   (forge-test--make-pullreq repo))
-             ;; One browser-pending row (their-id set) and one locally-staged (their-id nil).
-             (_bp  (forge-test--make-review-comment
-                    pr :id "bp-1" :pending-p t :their-id "RC_node1"
-                    :discussion-id "RT_thread1" :body "Browser draft" :new-line 5))
-             (_ls  (forge-test--make-review-comment
-                    pr :id "ls-1" :pending-p t :their-id nil
-                    :body "Local stage" :new-line 7 :new-path "src/foo.el")))
+             (_rc  (forge-test--make-review-comment
+                    pr :pending-p t :their-id "RC_node1")))
         (forge-itest--with-sync-rest
-          (let* ((query-calls  nil)
-                 (mutate-calls nil))
+          (let ((mutations nil))
             (cl-letf (((symbol-function 'forge--query)
                        (lambda (_obj query vars &rest _)
-                         (push (list query vars) query-calls)
-                         ;; Return a fake pending review ID for the lookup query,
-                         ;; and nil for the addPullRequestReviewThread mutation.
+                         (push (cons query vars) mutations)
                          (if (string-match-p "PENDING" (format "%s" query))
-                             '((node (reviews (nodes ((id . "PRR_review1"))))))
-                           nil)))
-                      ((symbol-function 'forge--rest)
-                       (lambda (&rest args) (push args mutate-calls))))
-              (forge--review-submit repo pr)
-              ;; Should have queried for the pending review ID.
-              (should (= (length query-calls) 1))
-              ;; All pending rows flushed.
-              (should (null (seq-filter (lambda (rc) (oref rc pending-p))
-                                        (oref pr review-comments))))))))))
+                             '((node (reviews (nodes ((id . "PRR_rev1"))))))
+                           nil))))
+              (forge--review-publish-pending
+               repo pr
+               :callback (lambda (&rest _) nil)
+               :errorback #'error)
+              ;; First call: lookup; second: submitPullRequestReview.
+              (should (= (length mutations) 2))
+              (should (string-match-p "submit" (downcase (format "%s" (caar mutations)))))))))))
   ```
 
-  > Note: This test is intentionally coarse — the exact mock shape will be refined in the implementation step. The key invariant is (a) a GraphQL query for `PENDING` reviews fires, and (b) all pending rows are flushed.
-
-- [ ] **Step 2: Run the failing test**
+- [ ] **Step 2: Run to confirm failures**
 
   ```sh
-  make test 2>&1 | grep -E "FAILED|forge-review-github-submit-with-browser-pending"
+  make test 2>&1 | grep -E "forge-review-github-create-draft|forge-review-github-publish"
   ```
 
-  Expected: `FAILED`
+  Expected: both `FAILED`
 
-- [ ] **Step 3: Add the generic declaration in `forge-review.el`**
+- [ ] **Step 3: Implement `forge--review-create-draft` for GitHub**
 
-  In `lisp/forge-review.el`, after the `forge--review-submit` generic (around line 132), add:
+  In `lisp/forge-github.el`, add after `forge--review-post-comment`:
 
   ```elisp
-  (cl-defgeneric forge--review-fetch-pending-review-id (repo pr &key callback errorback)
-    "Fetch the node ID of the current user's pending review on PR, or nil.
-  Calls CALLBACK with the ID string (or nil) as its sole argument.")
+  (cl-defmethod forge--review-create-draft
+    ((_repo forge-github-repository) pr body path side line &key callback errorback)
+    "Create a GitHub draft review thread at PATH SIDE LINE with BODY."
+    (forge--query pr
+      `(mutation
+        [(input $input AddPullRequestReviewThreadInput!)]
+        (addPullRequestReviewThread
+         [(input $input)]
+         (thread
+          (comments
+           [(first 1)]
+           (nodes id databaseId
+                  (author login) body createdAt updatedAt
+                  diffHunk (reactionGroups content (reactors totalCount))
+                  (pullRequestReview id state))))))
+      `((input
+         (pullRequestId . ,(oref pr their-id))
+         (path . ,path)
+         (line . ,line)
+         (side . ,(if (eq side 'old) "LEFT" "RIGHT"))
+         (body . ,body)))
+      :callback  (lambda (data _headers _status _req)
+                   (let* ((node (car (alist-get 'nodes
+                                      (alist-get 'comments
+                                       (alist-get 'thread
+                                        (alist-get 'addPullRequestReviewThread data)))))))
+                     (when callback
+                       (funcall callback
+                                (forge--github-draft-node-to-rc pr node)))))
+      :errorback errorback))
+
+  (defun forge--github-draft-node-to-rc (pr node)
+    "Map a GitHub comment NODE from addPullRequestReviewThread into a DB row.
+  Inserts the row and returns it."
+    (let-alist node
+      (let* ((rc (forge-pullreq-review-comment
+                  :id           (forge--object-id (oref pr id) .id)
+                  :their-id     .id
+                  :discussion-id nil        ; thread ID not returned here; filled on next pull
+                  :number       .databaseId
+                  :pullreq      (oref pr id)
+                  :new-path     nil         ; not returned by mutation; filled on next pull
+                  :old-path     nil
+                  :new-line     nil
+                  :old-line     nil
+                  :diff-hunk    .diffHunk
+                  :outdated-p   nil
+                  :resolved-p   nil
+                  :reply-to     nil
+                  :review-state 'pending
+                  :author       .author.login
+                  :body         (forge--sanitize-string .body)
+                  :created      .createdAt
+                  :updated      .updatedAt
+                  :reactions    (forge--reaction-groups-to-alist .reactionGroups)
+                  :pending-p    t)))
+        (closql-insert (forge-db) rc t)
+        rc)))
   ```
 
-- [ ] **Step 4: Implement `forge--review-fetch-pending-review-id` for GitHub**
+- [ ] **Step 4: Implement `forge--review-edit-draft` for GitHub**
 
-  In `lisp/forge-github.el`, after `forge--review-submit` (after line ~1457), add:
+  In `lisp/forge-github.el`, add:
 
   ```elisp
-  (cl-defmethod forge--review-fetch-pending-review-id
+  (cl-defmethod forge--review-edit-draft
+    ((_repo forge-github-repository) _pr rc body &key callback errorback)
+    "Edit the body of GitHub draft review comment RC."
+    (forge--query rc
+      `(mutation
+        [(input $input UpdatePullRequestReviewCommentInput!)]
+        (updatePullRequestReviewComment
+         [(input $input)]
+         (pullRequestReviewComment id body updatedAt)))
+      `((input
+         (pullRequestReviewCommentId . ,(oref rc their-id))
+         (body . ,body)))
+      :callback  (lambda (data _headers _status _req)
+                   (let* ((updated (alist-get 'updatePullRequestReviewComment data)))
+                     (oset rc body (alist-get 'body updated))
+                     (oset rc updated (alist-get 'updatedAt updated))
+                     (when callback (funcall callback rc))))
+      :errorback errorback))
+  ```
+
+- [ ] **Step 5: Implement `forge--review-publish-pending` for GitHub**
+
+  In `lisp/forge-github.el`, add:
+
+  ```elisp
+  (cl-defmethod forge--review-publish-pending
     ((_repo forge-github-repository) pr &key callback errorback)
-    "Query GitHub for the ID of the current user's PENDING review on PR."
+    "Submit the current user's pending review on PR via submitPullRequestReview."
     (forge--query pr
       '(query
         [(id $id ID!)]
-        (node
-         [(id $id)]
-         (... on PullRequest
-              (reviews [(last 1) (states [PENDING])]
-                       (nodes id)))))
+        (node [(id $id)]
+              (... on PullRequest
+                   (reviews [(last 1) (states [PENDING])]
+                            (nodes id)))))
       `((id . ,(oref pr their-id)))
       :callback  (lambda (data _headers _status _req)
                    (let* ((nodes (alist-get 'nodes
                                   (alist-get 'reviews
-                                   (alist-get 'node data)))))
-                     (funcall callback (and nodes (alist-get 'id (car nodes))))))
+                                   (alist-get 'node data))))
+                          (review-id (and nodes (alist-get 'id (car nodes)))))
+                     (if (not review-id)
+                         (when errorback
+                           (funcall errorback
+                                    (make-condition-variable "no pending review found") nil nil nil))
+                       (forge--query pr
+                         `(mutation
+                           [(input $input SubmitPullRequestReviewInput!)]
+                           (submitPullRequestReview
+                            [(input $input)]
+                            (pullRequestReview id)))
+                         `((input
+                            (pullRequestReviewId . ,review-id)
+                            (event . "COMMENT")
+                            (body  . "")))
+                         :callback  callback
+                         :errorback errorback))))
       :errorback errorback))
   ```
 
-- [ ] **Step 5: Rewrite `forge--review-submit` for GitHub to branch on browser-pending**
-
-  In `lisp/forge-github.el`, replace the existing `forge--review-submit` method body (lines ~1440–1457) with:
-
-  ```elisp
-  (cl-defmethod forge--review-submit ((_repo forge-github-repository) pr)
-    "Submit pending review comments for PR to GitHub."
-    (let* ((repo          (forge-get-repository pr))
-           (all-pending   (seq-filter (lambda (rc) (oref rc pending-p))
-                                      (oref pr review-comments)))
-           (browser-pending (seq-filter (lambda (rc) (oref rc their-id)) all-pending))
-           (local-staged    (seq-remove  (lambda (rc) (oref rc their-id)) all-pending))
-           (local-threads   (forge--github-pending-review-threads-from local-staged)))
-      (if browser-pending
-          ;; Path A: an existing pending review lives on GitHub.
-          ;; 1. Fetch its node ID.
-          ;; 2. Add any locally-staged threads to it.
-          ;; 3. Submit it.
-          (forge--review-fetch-pending-review-id repo pr
-            :callback  (lambda (review-id)
-                         (forge--github-add-threads-then-submit
-                          repo pr review-id local-threads all-pending))
-            :errorback (forge--post-submit-errorback))
-        ;; Path B: only locally-staged rows — use existing addPullRequestReview.
-        (forge-mutate pr addPullRequestReview
-          ((pullRequestId (oref pr their-id))
-           (event "COMMENT")
-           (body  "")
-           (and local-threads (threads (vconcat local-threads))))
-          :callback  (lambda (&rest _)
-                       (forge--github-flush-pending-review-comments pr)
-                       (when local-threads
-                         (forge--pull-topic repo pr)))
-          :errorback (forge--post-submit-errorback))
-        (when forge--query-synchronous
-          (forge--github-flush-pending-review-comments pr)
-          (when local-threads
-            (forge--pull-topic repo pr))))))
-  ```
-
-- [ ] **Step 6: Add `forge--github-pending-review-threads-from` helper**
-
-  In `lisp/forge-github.el`, rename the existing `forge--github-pending-review-threads` (line ~1425) to `forge--github-pending-review-threads-from` and update it to accept an explicit list rather than reading from the PR:
-
-  ```elisp
-  (defun forge--github-pending-review-threads-from (rcs)
-    "Return RCS as GraphQL DraftPullRequestReviewThread input alists."
-    (mapcar (lambda (rc)
-              (let* ((left-p (and (oref rc old-line) (null (oref rc new-line))))
-                     (path   (if left-p (or (oref rc old-path) (oref rc new-path))
-                               (oref rc new-path)))
-                     (line   (if left-p (oref rc old-line) (oref rc new-line)))
-                     (side   (if left-p "LEFT" "RIGHT")))
-                (delq nil (list (cons 'path path)
-                                (cons 'line line)
-                                (cons 'side side)
-                                (cons 'body (oref rc body))))))
-            rcs))
-  ```
-
-  Update the two callers that used `forge--github-pending-review-threads`:
-  - `forge--submit-approve-pullreq` (line ~1057) — change `forge--github-pending-review-threads` calls to `(forge--github-pending-review-threads-from (seq-filter ...))`. Actually those callers use `forge--github-pending-review-comments` (the REST format, not GraphQL). Double-check both functions and update only the GraphQL one.
-
-  ```elisp
-  ;; Old helper kept for REST approve/request-changes path — rename to clarify:
-  ;; forge--github-pending-review-comments  →  kept as-is (returns REST format)
-  ;; forge--github-pending-review-threads   →  renamed to forge--github-pending-review-threads-from
-  ```
-
-- [ ] **Step 7: Add `forge--github-add-threads-then-submit` helper**
-
-  In `lisp/forge-github.el`, add after the fetch method:
-
-  ```elisp
-  (defun forge--github-add-threads-then-submit (repo pr review-id threads all-pending)
-    "Add THREADS to an existing GitHub review REVIEW-ID, then submit it.
-  ALL-PENDING is the full list of pending rows to flush on success."
-    (cl-labels
-        ((add-next (remaining)
-           (if remaining
-               (let ((t1 (car remaining)))
-                 (forge--query pr
-                   `(mutation
-                     [(input $input AddPullRequestReviewThreadInput!)]
-                     (addPullRequestReviewThread
-                      [(input $input)]
-                      (thread id)))
-                   `((input
-                      (pullRequestReviewId . ,review-id)
-                      (path . ,(alist-get 'path t1))
-                      (line . ,(alist-get 'line t1))
-                      (side . ,(alist-get 'side t1))
-                      (body . ,(alist-get 'body t1))))
-                   :callback  (lambda (&rest _) (add-next (cdr remaining)))
-                   :errorback (forge--post-submit-errorback)))
-             ;; All threads added — now submit the review.
-             (forge--query pr
-               `(mutation
-                 [(input $input SubmitPullRequestReviewInput!)]
-                 (submitPullRequestReview
-                  [(input $input)]
-                  (pullRequestReview id)))
-               `((input
-                  (pullRequestReviewId . ,review-id)
-                  (event . "COMMENT")
-                  (body  . "")))
-               :callback  (lambda (&rest _)
-                            (dolist (rc all-pending) (closql-delete rc))
-                            (forge--pull-topic repo pr))
-               :errorback (forge--post-submit-errorback)))))
-      (if forge--query-synchronous
-          ;; In synchronous mode callbacks are suppressed; use direct iteration.
-          (progn
-            (dolist (t1 threads)
-              (forge--query pr
-                `(mutation
-                  [(input $input AddPullRequestReviewThreadInput!)]
-                  (addPullRequestReviewThread [(input $input)] (thread id)))
-                `((input
-                   (pullRequestReviewId . ,review-id)
-                   (path . ,(alist-get 'path t1))
-                   (line . ,(alist-get 'line t1))
-                   (side . ,(alist-get 'side t1))
-                   (body . ,(alist-get 'body t1))))))
-            (forge--query pr
-              `(mutation
-                [(input $input SubmitPullRequestReviewInput!)]
-                (submitPullRequestReview [(input $input)] (pullRequestReview id)))
-              `((input
-                 (pullRequestReviewId . ,review-id)
-                 (event . "COMMENT")
-                 (body  . ""))))
-            (dolist (rc all-pending) (closql-delete rc))
-            (forge--pull-topic repo pr))
-        (add-next threads))))
-  ```
-
-- [ ] **Step 8: Update `forge--github-pending-review-comments` to exclude browser-pending rows from REST approve payload**
-
-  In `lisp/forge-github.el`, in `forge--github-pending-review-comments` (line ~1032), change the filter to exclude rows where `their-id` is non-nil (browser-pending rows already exist on GitHub and must not be duplicated in the approve POST):
-
-  ```elisp
-  (defun forge--github-pending-review-comments (topic)
-    "Return locally-staged pending review-comment rows for TOPIC as REST `comments' alist.
-  Excludes browser-pending rows (their-id non-nil) since those already exist on GitHub."
-    (mapcar (lambda (rc)
-              (let* ((left-p (and (oref rc old-line) (null (oref rc new-line))))
-                     (path   (if left-p (or (oref rc old-path) (oref rc new-path))
-                               (oref rc new-path)))
-                     (line   (if left-p (oref rc old-line) (oref rc new-line)))
-                     (side   (if left-p "LEFT" "RIGHT")))
-                (list (cons 'path path)
-                      (cons 'line line)
-                      (cons 'side side)
-                      (cons 'body (oref rc body)))))
-            (seq-filter (lambda (rc) (and (oref rc pending-p)
-                                          (null (oref rc their-id))))
-                        (oref topic review-comments))))
-  ```
-
-  Verify `forge--github-flush-pending-review-comments` still flushes *all* pending rows (both browser-pending and locally-staged) — it uses `(oref rc pending-p)` without a `their-id` filter, so leave it unchanged.
-
-- [ ] **Step 9: Run the full test suite**
+- [ ] **Step 6: Run the full test suite**
 
   ```sh
   make test 2>&1 | tail -10
   ```
 
-  Expected: all tests pass. The new test from Step 1 should now pass.
+  Expected: all pass including the two new tests.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 7: Commit**
 
   ```sh
-  git add lisp/forge-review.el lisp/forge-github.el tests/forge-review-test.el
-  git commit -m "fix: submit browser-pending GitHub review via submitPullRequestReview"
+  git add lisp/forge-github.el tests/forge-review-test.el
+  git commit -m "feat: implement GitHub draft create/edit/publish generics"
   ```
 
 ---
 
-### Task 3: Fix the discard path for browser-pending comments
+### Task 4: GitLab backend — implement draft create, edit, delete, publish
 
-**Context:** `forge-discard-review-comment` (forge-review.el line 156) branches on `pending-p`:
-- `pending-p t` → local-only delete (no API call). **Wrong for browser-pending**: these have real `their-id` on GitHub, so the API comment should be deleted too.
-- `pending-p nil` → API delete first via `forge--review-delete-comment`, then local delete.
-
-The fix: add a third branch — if `pending-p t` AND `their-id` non-nil, call `forge--review-delete-comment` then `(closql-delete rc)`. If `pending-p t` AND `their-id` nil (purely local), keep the existing local-only path.
+GitLab draft notes API: `GET/POST /projects/:id/merge_requests/:iid/draft_notes`, `PUT/DELETE /projects/:id/merge_requests/:iid/draft_notes/:note_id`, `POST /projects/:id/merge_requests/:iid/draft_notes/bulk_publish`.
 
 **Files:**
-- Modify: `lisp/forge-review.el` (`forge-discard-review-comment`)
+- Modify: `lisp/forge-gitlab.el`
 - Test: `tests/forge-review-test.el`
 
 **Interfaces:**
-- Consumes (Task 1): `pending-p t`, `their-id` non-nil on browser-pending rows
+- Create: `POST .../draft_notes` with `{note, position: {base_sha, start_sha, head_sha, position_type, new_path, old_path, new_line, old_line}}`. Response: draft note object with `id`.
+- Edit: `PUT .../draft_notes/:id` with `{note}`.
+- Delete: `DELETE .../draft_notes/:id`. (Already covered by existing `forge--review-delete-comment` GitLab method using `forge--glab-delete` — verify it uses the right path.)
+- Publish: `POST .../draft_notes/bulk_publish` with no body (publishes all drafts).
+- Pull: `GET .../draft_notes` returns all drafts for the current user. These must be fetched separately (not part of `forge--update-pullreq-review-comments` which reads submitted notes). Add a `forge--update-pullreq-draft-notes` helper called from the pull flow.
 
-- [ ] **Step 1: Write a failing test**
+- [ ] **Step 1: Write failing tests**
 
-  In `tests/forge-review-test.el`, add after the existing discard tests:
+  In `tests/forge-review-test.el`:
 
   ```elisp
-  (ert-deftest forge-review-discard-browser-pending-calls-api ()
-    "Discarding a browser-pending comment (pending-p t, their-id set) calls the delete API."
+  (ert-deftest forge-review-gitlab-create-draft-posts-to-draft-notes ()
+    "forge--review-create-draft for GitLab POSTs to draft_notes and stores row with pending-p t."
     (forge-test--with-db
-      (let* ((repo (forge-test--make-repo))
-             (pr   (forge-test--make-pullreq repo))
-             (rc   (forge-test--make-review-comment
-                    pr :pending-p t :their-id "RC_node1" :number 201)))
-        (let ((delete-called nil))
-          (cl-letf (((symbol-function 'forge--review-delete-comment)
-                     (lambda (_repo _pr _rc &key callback _errorback)
-                       (setq delete-called t)
-                       (funcall callback nil nil nil nil))))
-            (forge-itest--with-sync-rest
-              (forge-discard-review-comment rc)))
-          (should delete-called)
-          ;; Row should be gone from DB.
-          (should (null (closql-get (forge-db) (oref rc id) 'forge-pullreq-review-comment)))))))
+      (let* ((repo (forge-test--make-gl-repo))
+             (pr   (forge-test--make-gl-pullreq repo)))
+        (forge-itest--with-sync-rest
+          (let ((posted-to nil))
+            (cl-letf (((symbol-function 'forge--rest)
+                       (lambda (_obj verb path _params &rest _)
+                         (setq posted-to (list verb path))
+                         ;; Fake draft note response.
+                         '((id . 77)
+                           (author (username . "alice"))
+                           (note . "My draft")
+                           (created_at . "2026-07-19T10:00:00Z")
+                           (updated_at . "2026-07-19T10:00:00Z")
+                           (position
+                            (new_path . "src/foo.el")
+                            (old_path . "src/foo.el")
+                            (new_line . 5)
+                            (old_line . nil))))))
+              (forge--review-create-draft
+               repo pr "My draft" "src/foo.el" 'new 5
+               :callback (lambda (rc)
+                           (should (equal (oref rc their-id) "77"))
+                           (should (oref rc pending-p)))
+               :errorback #'error)
+              (should (equal (car posted-to) "POST"))))))))
 
-  (ert-deftest forge-review-discard-local-staged-skips-api ()
-    "Discarding a locally-staged comment (pending-p t, their-id nil) does NOT call the API."
+  (ert-deftest forge-review-gitlab-publish-pending-calls-bulk-publish ()
+    "forge--review-publish-pending for GitLab POSTs to draft_notes/bulk_publish."
     (forge-test--with-db
-      (let* ((repo (forge-test--make-repo))
-             (pr   (forge-test--make-pullreq repo))
-             (rc   (forge-test--make-review-comment pr :pending-p t :their-id nil)))
-        (let ((delete-called nil))
-          (cl-letf (((symbol-function 'forge--review-delete-comment)
-                     (lambda (&rest _) (setq delete-called t))))
-            (forge-discard-review-comment rc))
-          (should-not delete-called)
-          (should (null (closql-get (forge-db) (oref rc id) 'forge-pullreq-review-comment)))))))
+      (let* ((repo (forge-test--make-gl-repo))
+             (pr   (forge-test--make-gl-pullreq repo)))
+        (forge-itest--with-sync-rest
+          (let ((path-called nil))
+            (cl-letf (((symbol-function 'forge--rest)
+                       (lambda (_obj _verb path &rest _)
+                         (setq path-called path))))
+              (forge--review-publish-pending
+               repo pr
+               :callback (lambda (&rest _) nil)
+               :errorback #'error)
+              (should (string-match-p "bulk_publish" path-called))))))))
   ```
 
-- [ ] **Step 2: Run the failing tests**
+- [ ] **Step 2: Run to confirm failures**
 
   ```sh
-  make test 2>&1 | grep -E "forge-review-discard"
+  make test 2>&1 | grep -E "forge-review-gitlab-create-draft|forge-review-gitlab-publish"
   ```
 
-  Expected: `forge-review-discard-browser-pending-calls-api  FAILED`
-  `forge-review-discard-local-staged-skips-api  PASSED` (this already works)
+  Expected: both `FAILED`
 
-- [ ] **Step 3: Implement the fix in `forge-review.el`**
+- [ ] **Step 3: Implement `forge--review-create-draft` for GitLab**
 
-  Locate `forge-discard-review-comment` (line ~152). Replace:
+  In `lisp/forge-gitlab.el`, add after `forge--update-pullreq-review-comments`:
 
   ```elisp
-  (defun forge-discard-review-comment (rc)
-    "Delete review comment RC from the database and the forge API.
-  For pending (not-yet-submitted) comments only the local DB row is
-  removed.  For submitted comments the forge API is called first."
-    (if (oref rc pending-p)
-        (progn
-          (closql-delete rc)
-          (forge-refresh-buffer))
-      (when-let* ((pr   (closql-get (forge-db) (oref rc pullreq) 'forge-pullreq))
-                  (repo (forge-get-repository pr)))
-        (forge--review-delete-comment repo pr rc
-          :callback  (lambda (&rest _)
-                       (closql-delete rc)
-                       (forge-refresh-buffer))
-          :errorback (forge--post-submit-errorback)))))
+  (cl-defmethod forge--review-create-draft
+    ((_repo forge-gitlab-repository) pr body path side line &key callback errorback)
+    "Create a GitLab draft note on PR at PATH SIDE LINE with BODY."
+    (let* ((base-sha  (oref pr base-sha))
+           (start-sha (oref pr base-rev))
+           (head-sha  (oref pr head-rev))
+           (new-line  (and (eq side 'new) line))
+           (old-line  (and (eq side 'old) line)))
+      (forge--rest pr "POST"
+        "/projects/:project/merge_requests/:number/draft_notes"
+        (delq nil
+              (list (cons 'note body)
+                    (cons 'position
+                          (delq nil
+                                (list (cons 'base_sha          base-sha)
+                                      (cons 'start_sha         start-sha)
+                                      (cons 'head_sha          head-sha)
+                                      (cons 'position_type     "text")
+                                      (cons 'new_path          path)
+                                      (cons 'old_path          path)
+                                      (and new-line (cons 'new_line new-line))
+                                      (and old-line (cons 'old_line old-line)))))))
+        :callback  (lambda (data _headers _status _req)
+                     (when callback
+                       (funcall callback
+                                (forge--gitlab-draft-note-to-rc pr data))))
+        :errorback errorback)))
+
+  (defun forge--gitlab-draft-note-to-rc (pr note)
+    "Map a GitLab draft NOTE response into a DB row for PR. Inserts and returns it."
+    (let-alist note
+      (let* ((id-str (number-to-string .id))
+             (rc     (forge-pullreq-review-comment
+                      :id           (forge--object-id (oref pr id) id-str)
+                      :their-id     id-str
+                      :discussion-id nil
+                      :number       .id
+                      :pullreq      (oref pr id)
+                      :new-path     .position.new_path
+                      :old-path     .position.old_path
+                      :new-line     .position.new_line
+                      :old-line     .position.old_line
+                      :diff-hunk    nil
+                      :outdated-p   nil
+                      :resolved-p   nil
+                      :reply-to     nil
+                      :review-state nil
+                      :author       .author.username
+                      :body         (forge--sanitize-string .note)
+                      :created      .created_at
+                      :updated      .updated_at
+                      :reactions    nil
+                      :pending-p    t)))
+        (closql-insert (forge-db) rc t)
+        rc)))
   ```
 
-  With:
+- [ ] **Step 4: Implement `forge--review-edit-draft` for GitLab**
+
+  In `lisp/forge-gitlab.el`, add:
 
   ```elisp
-  (defun forge-discard-review-comment (rc)
-    "Delete review comment RC from the database and the forge API.
-  For locally-staged pending comments (pending-p t, their-id nil) only the
-  local DB row is removed.  For browser-pending comments (pending-p t,
-  their-id non-nil) and for submitted comments, the forge API is called first."
-    (if (and (oref rc pending-p) (null (oref rc their-id)))
-        (progn
-          (closql-delete rc)
-          (forge-refresh-buffer))
-      (when-let* ((pr   (closql-get (forge-db) (oref rc pullreq) 'forge-pullreq))
-                  (repo (forge-get-repository pr)))
-        (forge--review-delete-comment repo pr rc
-          :callback  (lambda (&rest _)
-                       (closql-delete rc)
-                       (forge-refresh-buffer))
-          :errorback (forge--post-submit-errorback)))))
+  (cl-defmethod forge--review-edit-draft
+    ((_repo forge-gitlab-repository) pr rc body &key callback errorback)
+    "Edit the body of GitLab draft note RC."
+    (forge--rest pr "PUT"
+      (format "/projects/:project/merge_requests/:number/draft_notes/%s"
+              (oref rc number))
+      (list (cons 'note body))
+      :callback  (lambda (_data _headers _status _req)
+                   (oset rc body body)
+                   (when callback (funcall callback rc)))
+      :errorback errorback))
   ```
 
-- [ ] **Step 4: Run the full test suite**
+- [ ] **Step 5: Verify `forge--review-delete-comment` for GitLab covers draft notes**
+
+  Read the existing GitLab `forge--review-delete-comment` method and confirm it resolves to a path covering draft notes. If it uses `/projects/:project/merge_requests/:topic/notes/:number`, that covers submitted notes only. Draft notes need `/draft_notes/:number`.
+
+  In `lisp/forge-gitlab.el`, find `forge--review-delete-comment` and update to dispatch on `pending-p`:
+
+  ```elisp
+  (cl-defmethod forge--review-delete-comment
+    ((_repo forge-gitlab-repository) pr rc &key callback errorback)
+    "Delete review comment RC on GitLab — draft_notes for pending, notes for submitted."
+    (forge--rest pr
+      "DELETE"
+      (if (oref rc pending-p)
+          (format "/projects/:project/merge_requests/:number/draft_notes/%s"
+                  (oref rc number))
+        "/projects/:project/merge_requests/:topic/notes/:number")
+      nil
+      :callback  callback
+      :errorback errorback))
+  ```
+
+- [ ] **Step 6: Implement `forge--review-publish-pending` for GitLab**
+
+  In `lisp/forge-gitlab.el`, add:
+
+  ```elisp
+  (cl-defmethod forge--review-publish-pending
+    ((_repo forge-gitlab-repository) pr &key callback errorback)
+    "Publish all GitLab draft notes on PR via bulk_publish."
+    (forge--rest pr "POST"
+      "/projects/:project/merge_requests/:number/draft_notes/bulk_publish"
+      nil
+      :callback  callback
+      :errorback errorback))
+  ```
+
+- [ ] **Step 7: Run full test suite**
 
   ```sh
   make test 2>&1 | tail -10
   ```
 
-  Expected: all tests pass including both new discard tests.
+  Expected: all pass.
+
+- [ ] **Step 8: Commit**
+
+  ```sh
+  git add lisp/forge-gitlab.el tests/forge-review-test.el
+  git commit -m "feat: implement GitLab draft note create/edit/delete/publish generics"
+  ```
+
+---
+
+### Task 5: Rewrite staging — `forge-post-stage` calls the API
+
+Replace the local-only `forge-review--stage-comment` with an API call via `forge--review-create-draft`. The DB row is written in the callback with the real `their-id`.
+
+**Files:**
+- Modify: `lisp/forge-review.el`
+- Test: `tests/forge-review-test.el`
+
+**Interfaces:**
+- Consumes (Tasks 3, 4): `forge--review-create-draft` generic
+- `forge-post-stage` reads post buffer state, calls `forge--review-create-draft`, closes buffer on success
+
+- [ ] **Step 1: Write a failing test**
+
+  In `tests/forge-review-test.el`:
+
+  ```elisp
+  (ert-deftest forge-review-stage-comment-calls-create-draft-api ()
+    "`forge-review--stage-comment' calls forge--review-create-draft, not local insert."
+    (forge-test--with-db
+      (let* ((repo (forge-test--make-repo))
+             (pr   (forge-test--make-pullreq repo))
+             (api-called nil))
+        (forge-itest--with-sync-rest
+          (forge-test--with-diff-buffer
+            "--- a/src/foo.el\n+++ b/src/foo.el\n@@ -1,3 +1,3 @@\n line\n-old\n+new\n"
+            (forward-line 3)  ; land on the +new line
+            (cl-letf (((symbol-function 'forge--review-create-draft)
+                       (lambda (_repo _pr _body _path _side _line &key callback _errorback)
+                         (setq api-called t)
+                         ;; Simulate callback with a fake rc.
+                         (let ((rc (forge-test--make-review-comment
+                                    pr :pending-p t :their-id "RC_new1")))
+                           (funcall callback rc)))))
+              (with-temp-buffer
+                (forge-post-mode)
+                (setq forge--buffer-post-object pr)
+                (setq forge--pre-post-buffer (current-buffer))
+                (insert "My staged comment")
+                (forge-review--stage-comment
+                 repo pr)))))
+        (should api-called))))
+  ```
+
+- [ ] **Step 2: Run to confirm failure**
+
+  ```sh
+  make test 2>&1 | grep "forge-review-stage-comment-calls-create-draft"
+  ```
+
+  Expected: `FAILED`
+
+- [ ] **Step 3: Rewrite `forge-review--stage-comment`**
+
+  In `lisp/forge-review.el`, replace `forge-review--stage-comment` (lines ~382–412):
+
+  ```elisp
+  (defun forge-review--stage-comment (repo post)
+    "Stage a new draft inline review comment via the forge API.
+  Reads body and diff-line context from the current post buffer.
+  Writes the DB row in the callback once the server responds with a real ID."
+    (let* ((pr     (if (forge--childp post 'forge-pullreq) post
+                     forge--buffer-post-object))
+           (body   (forge--clear-comment-input (buffer-string)))
+           (result (with-current-buffer forge--pre-post-buffer
+                     (forge--diff-line-number-at-point)))
+           (path   (with-current-buffer forge--pre-post-buffer
+                     (forge--diff-file-at-point)))
+           (context-p (and result (consp (car result))))
+           (side   (cond (context-p       'new)
+                         ((eq (car result) 'old) 'old)
+                         (t               'new)))
+           (line   (cond (context-p       (alist-get 'new result))
+                         (t               (cdr result)))))
+      (forge--review-create-draft repo pr body path side line
+        :callback  (lambda (_rc)
+                     (forge-refresh-buffer forge--pre-post-buffer)
+                     (magit-mode-bury-buffer 'kill))
+        :errorback (forge--post-submit-errorback))))
+  ```
+
+- [ ] **Step 4: Run full test suite**
+
+  ```sh
+  make test 2>&1 | tail -10
+  ```
+
+  Expected: all pass.
 
 - [ ] **Step 5: Commit**
 
   ```sh
   git add lisp/forge-review.el tests/forge-review-test.el
-  git commit -m "fix: call delete API when discarding browser-pending review comment"
+  git commit -m "fix: forge-review--stage-comment calls API draft create instead of local insert"
   ```
 
 ---
 
-### Task 4: Display badge for browser-pending comments
+### Task 6: Rewrite edit — `forge-review--save-comment-edit` calls the API
 
-**Context:** `forge--review-comment-heading` (forge-review.el line 230) shows `[pending]` only when `(oref rc pending-p)`. After Task 1, browser-pending rows will have `pending-p t`, so they will automatically pick up the badge. However, it may be useful to distinguish "local draft" from "browser draft" in the heading. This task verifies the badge appears and optionally differentiates the label.
+Replace the local-only `oset rc body` with `forge--review-edit-draft` (for pending) or the existing `forge--submit-edit-post` path (for submitted).
 
 **Files:**
-- Modify: `lisp/forge-review.el` (if label differentiation is wanted)
+- Modify: `lisp/forge-review.el`
+- Test: `tests/forge-review-test.el`
+
+- [ ] **Step 1: Write a failing test**
+
+  ```elisp
+  (ert-deftest forge-review-save-comment-edit-calls-api-for-pending ()
+    "`forge-review--save-comment-edit' calls forge--review-edit-draft for pending rc."
+    (forge-test--with-db
+      (let* ((repo (forge-test--make-repo))
+             (pr   (forge-test--make-pullreq repo))
+             (rc   (forge-test--make-review-comment
+                    pr :pending-p t :their-id "RC_node1" :body "Original"))
+             (api-called nil))
+        (forge-itest--with-sync-rest
+          (cl-letf (((symbol-function 'forge--review-edit-draft)
+                     (lambda (_repo _pr _rc body &key callback _errorback)
+                       (setq api-called t)
+                       (oset rc body body)
+                       (funcall callback rc))))
+            (with-temp-buffer
+              (forge-post-mode)
+              (setq forge--buffer-post-object rc)
+              (setq forge--pre-post-buffer (current-buffer))
+              (insert "Updated body")
+              (forge-review--save-comment-edit repo rc))))
+        (should api-called)
+        (should (equal (oref rc body) "Updated body")))))
+  ```
+
+- [ ] **Step 2: Run to confirm failure**
+
+  ```sh
+  make test 2>&1 | grep "forge-review-save-comment-edit-calls-api"
+  ```
+
+  Expected: `FAILED`
+
+- [ ] **Step 3: Rewrite `forge-review--save-comment-edit`**
+
+  In `lisp/forge-review.el`, replace `forge-review--save-comment-edit` (lines ~414–419):
+
+  ```elisp
+  (defun forge-review--save-comment-edit (repo post)
+    "Save edits to review comment POST via the forge API."
+    (let* ((rc   (if (forge--childp post 'forge-pullreq-review-comment) post
+                   forge--buffer-post-object))
+           (pr   (closql-get (forge-db) (oref rc pullreq) 'forge-pullreq))
+           (body (forge--clear-comment-input (buffer-string))))
+      (if (oref rc pending-p)
+          (forge--review-edit-draft repo pr rc body
+            :callback  (lambda (_rc)
+                         (forge-refresh-buffer forge--pre-post-buffer)
+                         (magit-mode-bury-buffer 'kill))
+            :errorback (forge--post-submit-errorback))
+        ;; Submitted comment: use the existing edit-post path.
+        (forge--submit-edit-post repo rc))))
+  ```
+
+- [ ] **Step 4: Run full test suite**
+
+  ```sh
+  make test 2>&1 | tail -10
+  ```
+
+  Expected: all pass.
+
+- [ ] **Step 5: Commit**
+
+  ```sh
+  git add lisp/forge-review.el tests/forge-review-test.el
+  git commit -m "fix: forge-review--save-comment-edit calls API for both pending and submitted comments"
+  ```
+
+---
+
+### Task 7: Fix discard — always API-first regardless of `pending-p`
+
+Remove the `pending-p`-gated local-only branch. Both pending and submitted comments go through `forge--review-delete-comment`.
+
+**Files:**
+- Modify: `lisp/forge-review.el`
+- Test: `tests/forge-review-test.el`
+
+- [ ] **Step 1: Write a failing test**
+
+  ```elisp
+  (ert-deftest forge-review-discard-pending-calls-api ()
+    "Discarding a pending comment (pending-p t) calls forge--review-delete-comment."
+    (forge-test--with-db
+      (let* ((repo (forge-test--make-repo))
+             (pr   (forge-test--make-pullreq repo))
+             (rc   (forge-test--make-review-comment
+                    pr :pending-p t :their-id "RC_node1" :number 201))
+             (delete-called nil))
+        (cl-letf (((symbol-function 'forge--review-delete-comment)
+                   (lambda (_repo _pr _rc &key callback _errorback)
+                     (setq delete-called t)
+                     (funcall callback nil nil nil nil))))
+          (forge-discard-review-comment rc))
+        (should delete-called)
+        (should (null (closql-get (forge-db) (oref rc id)
+                                  'forge-pullreq-review-comment))))))
+  ```
+
+- [ ] **Step 2: Run to confirm failure**
+
+  ```sh
+  make test 2>&1 | grep "forge-review-discard-pending-calls-api"
+  ```
+
+  Expected: `FAILED`
+
+- [ ] **Step 3: Simplify `forge-discard-review-comment`**
+
+  In `lisp/forge-review.el`, replace `forge-discard-review-comment` (lines ~152–166):
+
+  ```elisp
+  (defun forge-discard-review-comment (rc)
+    "Delete review comment RC from the forge API and the local database."
+    (when-let* ((pr   (closql-get (forge-db) (oref rc pullreq) 'forge-pullreq))
+                (repo (forge-get-repository pr)))
+      (forge--review-delete-comment repo pr rc
+        :callback  (lambda (&rest _)
+                     (closql-delete rc)
+                     (forge-refresh-buffer))
+        :errorback (forge--post-submit-errorback))))
+  ```
+
+- [ ] **Step 4: Run full test suite**
+
+  ```sh
+  make test 2>&1 | tail -10
+  ```
+
+  Expected: all pass.
+
+- [ ] **Step 5: Commit**
+
+  ```sh
+  git add lisp/forge-review.el tests/forge-review-test.el
+  git commit -m "fix: forge-discard-review-comment always calls API, removing local-only branch"
+  ```
+
+---
+
+### Task 8: Rewrite submit path — use `forge--review-publish-pending`
+
+Replace `forge--review-submit` (called by `forge-submit-pending-review`) with `forge--review-publish-pending`. Remove `forge--github-pending-review-threads`, `forge--github-flush-pending-review-comments`, and the old async GitLab sequential-POST loop — the server now owns the draft rows, so there is nothing to flush client-side beyond refreshing the topic.
+
+**Files:**
+- Modify: `lisp/forge-review.el` (`forge-submit-pending-review`)
+- Modify: `lisp/forge-github.el` (remove old helpers, update approve/request-changes flush)
+- Modify: `lisp/forge-gitlab.el` (remove old `forge--review-submit` sequential loop)
+- Test: `tests/forge-review-test.el`
+
+- [ ] **Step 1: Write a failing test**
+
+  ```elisp
+  (ert-deftest forge-review-submit-pending-calls-publish-pending ()
+    "`forge-submit-pending-review' calls forge--review-publish-pending and re-pulls topic."
+    (forge-test--with-db
+      (let* ((repo (forge-test--make-repo))
+             (pr   (forge-test--make-pullreq repo))
+             (_rc  (forge-test--make-review-comment
+                    pr :pending-p t :their-id "RC_node1"))
+             (publish-called nil)
+             (pull-called nil))
+        (forge-itest--with-sync-rest
+          (cl-letf (((symbol-function 'forge--review-publish-pending)
+                     (lambda (_repo _pr &key callback _errorback)
+                       (setq publish-called t)
+                       (funcall callback nil nil nil nil)))
+                    ((symbol-function 'forge--pull-topic)
+                     (lambda (&rest _) (setq pull-called t))))
+            (forge-submit-pending-review pr)))
+        (should publish-called)
+        (should pull-called))))
+  ```
+
+- [ ] **Step 2: Run to confirm failure**
+
+  ```sh
+  make test 2>&1 | grep "forge-review-submit-pending-calls-publish"
+  ```
+
+  Expected: `FAILED`
+
+- [ ] **Step 3: Rewrite `forge-submit-pending-review`**
+
+  In `lisp/forge-review.el`, replace `forge-submit-pending-review` (lines ~499–502):
+
+  ```elisp
+  (defun forge-submit-pending-review (pullreq)
+    "Publish all pending (draft) review comments on PULLREQ."
+    (interactive (list (forge-current-pullreq t)))
+    (let* ((repo (forge-get-repository pullreq)))
+      (forge--review-publish-pending repo pullreq
+        :callback  (lambda (&rest _)
+                     (forge--pull-topic repo pullreq))
+        :errorback (forge--post-submit-errorback))))
+  ```
+
+- [ ] **Step 4: Remove `forge--review-submit` generic and all old flush helpers**
+
+  In `lisp/forge-review.el`, delete the `forge--review-submit` generic declaration.
+
+  In `lisp/forge-github.el`, delete:
+  - `forge--github-pending-review-comments` (line ~1032)
+  - `forge--github-flush-pending-review-comments` (line ~1047)
+  - `forge--github-pending-review-threads` (line ~1425)
+  - `forge--review-submit` cl-defmethod (line ~1440)
+
+  Update `forge--submit-approve-pullreq` and `forge--submit-request-changes` (lines ~1053, ~1068): these currently bundle pending comment rows into the approve/request-changes REST POST body. Since pending rows now live on the server as drafts (not local constructs), remove the `comments` bundling — the approve/request-changes POST no longer needs to carry review comment payloads.
+
+  In `lisp/forge-gitlab.el`, delete the `forge--review-submit` cl-defmethod (the sequential POST loop, lines ~760–811).
+
+- [ ] **Step 5: Run full test suite**
+
+  ```sh
+  make test 2>&1 | tail -10
+  ```
+
+  Expected: all pass. Any tests for the old helpers should now be removed or updated.
+
+- [ ] **Step 6: Commit**
+
+  ```sh
+  git add lisp/forge-review.el lisp/forge-github.el lisp/forge-gitlab.el tests/forge-review-test.el
+  git commit -m "refactor: replace forge--review-submit with forge--review-publish-pending; remove local flush helpers"
+  ```
+
+---
+
+### Task 9: Add "Stage + Publish batch" post buffer action (`C-c C-p`)
+
+Add a third action to the post buffer for `new-review-comment`: stage the new comment as a draft, then immediately publish the entire pending batch. Only shown when the PR already has pending comments.
+
+**Files:**
+- Modify: `lisp/forge-post.el` (keymap + transient menu)
+- Modify: `lisp/forge-review.el` (new `forge-review--stage-and-publish` command)
 - Test: `tests/forge-review-test.el`
 
 **Interfaces:**
-- Consumes (Task 1): `pending-p t` on browser-pending rows; `their-id` non-nil distinguishes browser vs local
+- Consumes (Tasks 3, 4, 8): `forge--review-create-draft` + `forge--review-publish-pending`
 
-- [ ] **Step 1: Write a test verifying the `[pending]` badge appears on browser-pending rows**
-
-  In `tests/forge-review-test.el`, add:
+- [ ] **Step 1: Write a failing test**
 
   ```elisp
-  (ert-deftest forge-review-display-pending-badge-on-browser-pending ()
-    "A browser-pending comment heading includes [pending]."
+  (ert-deftest forge-review-stage-and-publish-creates-draft-then-publishes ()
+    "`forge-review--stage-and-publish' calls create-draft then publish-pending."
     (forge-test--with-db
       (let* ((repo (forge-test--make-repo))
              (pr   (forge-test--make-pullreq repo))
-             (rc   (forge-test--make-review-comment
-                    pr :pending-p t :their-id "RC_node1" :author "alice"
-                    :created "2026-07-19T10:00:00Z")))
-        (let ((heading (forge--review-comment-heading rc)))
-          (should (string-match-p "\\[pending\\]" heading))))))
+             ;; Pre-existing pending comment so the action is available.
+             (_existing (forge-test--make-review-comment
+                         pr :pending-p t :their-id "RC_existing"))
+             (create-called nil)
+             (publish-called nil))
+        (forge-itest--with-sync-rest
+          (cl-letf (((symbol-function 'forge--review-create-draft)
+                     (lambda (_repo _pr _body _path _side _line &key callback _errorback)
+                       (setq create-called t)
+                       (funcall callback (forge-test--make-review-comment
+                                          pr :pending-p t :their-id "RC_new2"))))
+                    ((symbol-function 'forge--review-publish-pending)
+                     (lambda (_repo _pr &key callback _errorback)
+                       (setq publish-called t)
+                       (funcall callback nil nil nil nil)))
+                    ((symbol-function 'forge--pull-topic)
+                     (lambda (&rest _) nil)))
+            (forge-test--with-diff-buffer
+              "--- a/src/foo.el\n+++ b/src/foo.el\n@@ -1,3 +1,3 @@\n line\n-old\n+new\n"
+              (forward-line 3)
+              (with-temp-buffer
+                (forge-post-mode)
+                (setq forge--buffer-post-object pr)
+                (setq forge--pre-post-buffer (current-buffer))
+                (insert "New comment")
+                (forge-review--stage-and-publish repo pr)))))
+        (should create-called)
+        (should publish-called))))
   ```
 
-- [ ] **Step 2: Run the test**
+- [ ] **Step 2: Run to confirm failure**
 
   ```sh
-  make test 2>&1 | grep "forge-review-display-pending-badge"
+  make test 2>&1 | grep "forge-review-stage-and-publish"
   ```
 
-  Expected: `PASSED` immediately (Task 1 already made `pending-p t` for browser-pending rows, so the badge logic already works).
+  Expected: `FAILED`
 
-  If it fails, check that `forge--review-comment-heading` is exported and testable; see line ~230 of `forge-review.el`.
+- [ ] **Step 3: Add `forge-review--stage-and-publish` to `forge-review.el`**
 
-- [ ] **Step 3: No code change needed if test passes**
-
-  If the test passes with no changes, the badge is automatically correct from Task 1.
-
-  If differentiation between `[local draft]` and `[pending]` is desired, change `forge--review-comment-heading` in `lisp/forge-review.el` around line 230:
+  In `lisp/forge-review.el`, after `forge-review--stage-comment`:
 
   ```elisp
-  (when (oref rc pending-p)
-    (if (oref rc their-id)
-        (push "[pending]" badges)      ; browser-drafted, not yet submitted
-      (push "[local draft]" badges)))  ; staged in forge, not yet sent
+  (defun forge-review--stage-and-publish (repo post)
+    "Stage a new draft comment then publish all pending comments as a batch review."
+    (let* ((pr    (if (forge--childp post 'forge-pullreq) post
+                    forge--buffer-post-object))
+           (body  (forge--clear-comment-input (buffer-string)))
+           (result (with-current-buffer forge--pre-post-buffer
+                     (forge--diff-line-number-at-point)))
+           (path  (with-current-buffer forge--pre-post-buffer
+                    (forge--diff-file-at-point)))
+           (context-p (and result (consp (car result))))
+           (side  (cond (context-p       'new)
+                        ((eq (car result) 'old) 'old)
+                        (t               'new)))
+           (line  (cond (context-p       (alist-get 'new result))
+                        (t               (cdr result)))))
+      (forge--review-create-draft repo pr body path side line
+        :callback  (lambda (_rc)
+                     (forge--review-publish-pending repo pr
+                       :callback  (lambda (&rest _)
+                                    (forge--pull-topic repo pr)
+                                    (magit-mode-bury-buffer 'kill))
+                       :errorback (forge--post-submit-errorback)))
+        :errorback (forge--post-submit-errorback))))
   ```
 
-  But only make this change if the user confirms the label distinction is wanted — skip for now.
+- [ ] **Step 4: Add `C-c C-p` keybinding and transient entry to `forge-post.el`**
 
-- [ ] **Step 4: Commit (even if no code changed — commit the test)**
+  In `lisp/forge-post.el`, in `forge-post-mode-map` (line ~109), add:
+
+  ```elisp
+  "C-c C-p" #'forge-post-stage-and-publish
+  ```
+
+  Add the command:
+
+  ```elisp
+  (declare-function forge-review--stage-and-publish "forge-review" (repo post))
+
+  (defun forge-post-stage-and-publish ()
+    "Stage the current inline review comment as a draft, then publish the pending batch."
+    (interactive)
+    (save-buffer)
+    (forge-review--stage-and-publish
+     (forge-get-repository forge--buffer-post-object)
+     forge--buffer-post-object))
+  ```
+
+  In `forge-post-menu` transient (line ~320), add a new entry in the Actions group:
+
+  ```elisp
+  ("C-p" "Stage + publish batch" forge-post-stage-and-publish
+   :if (lambda ()
+         (and (eq forge-edit-post-action 'new-review-comment)
+              (seq-some (lambda (rc) (oref rc pending-p))
+                        (oref forge--buffer-post-object review-comments)))))
+  ```
+
+- [ ] **Step 5: Run full test suite**
 
   ```sh
-  git add tests/forge-review-test.el
-  git commit -m "test: verify pending badge on browser-pending review comments"
+  make test 2>&1 | tail -10
+  ```
+
+  Expected: all pass.
+
+- [ ] **Step 6: Commit**
+
+  ```sh
+  git add lisp/forge-post.el lisp/forge-review.el tests/forge-review-test.el
+  git commit -m "feat: add C-c C-p stage+publish-batch action to review comment post buffer"
   ```
 
 ---
 
-### Task 5: Guard edit path for browser-pending comments
+### Task 10: Pull GitLab draft notes alongside submitted notes
 
-**Context:** `forge-edit-review-comment` (line 446) uses `forge-review--save-comment-edit` which calls `(oset rc body body)` — local DB only. For browser-pending rows, editing locally is useful as long as the comment hasn't been submitted yet — the current body will be sent on next submit. No API interaction needed until submit.
+GitLab draft notes are not in the regular `GET .../discussions` response. They need a separate `GET .../draft_notes` call during topic pull. Add this to the GitLab pull flow so browser-pending drafts are visible after a `forge-pull`.
 
-**Conclusion:** No code change needed. This task is a verification step only.
+**Files:**
+- Modify: `lisp/forge-gitlab.el`
+- Test: `tests/forge-review-test.el`
 
-- [ ] **Step 1: Write a test confirming edit stores body locally for browser-pending**
-
-  ```elisp
-  (ert-deftest forge-review-edit-browser-pending-stores-body-locally ()
-    "Editing a browser-pending comment updates the body in the DB without an API call."
-    (forge-test--with-db
-      (let* ((repo (forge-test--make-repo))
-             (pr   (forge-test--make-pullreq repo))
-             (rc   (forge-test--make-review-comment
-                    pr :pending-p t :their-id "RC_node1" :body "Original")))
-        (let ((api-called nil))
-          (cl-letf (((symbol-function 'forge--query) (lambda (&rest _) (setq api-called t)))
-                    ((symbol-function 'forge--rest)   (lambda (&rest _) (setq api-called t))))
-            (oset rc body "Updated body")
-            (closql-insert (forge-db) rc t))
-          (should-not api-called)
-          (let ((fetched (closql-get (forge-db) (oref rc id) 'forge-pullreq-review-comment)))
-            (should (equal (oref fetched body) "Updated body")))))))
-  ```
-
-- [ ] **Step 2: Run the test**
-
-  ```sh
-  make test 2>&1 | grep "forge-review-edit-browser-pending"
-  ```
-
-  Expected: `PASSED` (no code change needed).
-
-- [ ] **Step 3: Commit the test**
-
-  ```sh
-  git add tests/forge-review-test.el
-  git commit -m "test: edit browser-pending comment stores body locally, no API call"
-  ```
-
----
-
-### Task 6: Pull-time deduplication — don't overwrite locally-staged rows with browser-pending rows
-
-**Context:** `forge--update-pullreq-review-comments` uses `(closql-insert ... t)` (replace-if-exists). Locally-staged rows have synthetic IDs (`pending-<float-time>`-derived). Browser-pending rows from GitHub get IDs derived from the real `their-id`. These two sets have different IDs so they can never collide. This task is a verification step to confirm the invariant holds.
-
-- [ ] **Step 1: Write a test confirming locally-staged rows survive a pull that returns browser-pending rows**
+- [ ] **Step 1: Write a failing test**
 
   ```elisp
-  (ert-deftest forge-review-pull-preserves-locally-staged-rows ()
-    "Pulling browser-pending threads does not delete locally-staged (their-id nil) rows."
+  (ert-deftest forge-review-gitlab-pull-fetches-draft-notes ()
+    "Pulling a GitLab MR fetches /draft_notes and stores rows with pending-p t."
     (forge-test--with-db
-      (let* ((repo    (forge-test--make-repo))
-             (pr      (forge-test--make-pullreq repo))
-             ;; Insert a locally-staged row.
-             (staged  (forge-test--make-review-comment
-                       pr :id "local-staged-1" :pending-p t :their-id nil :body "Mine"))
-             (payload (copy-tree forge-test--github-thread-payload)))
-        ;; Override the thread to be PENDING (browser-pending).
-        (setf (alist-get 'state (alist-get 'pullRequestReview
-                                  (nth 0 (alist-get 'comments payload))))
-              "PENDING")
-        (forge--update-pullreq-review-comments repo pr (list payload))
-        ;; Locally-staged row must still exist.
-        (let ((fetched (closql-get (forge-db) "local-staged-1" 'forge-pullreq-review-comment)))
-          (should fetched)
-          (should (equal (oref fetched body) "Mine"))
-          (should (oref fetched pending-p))))))
+      (let* ((repo (forge-test--make-gl-repo))
+             (pr   (forge-test--make-gl-pullreq repo))
+             (draft-note '((id . 55)
+                           (author (username . "carol"))
+                           (note . "Draft body")
+                           (created_at . "2026-07-19T09:00:00Z")
+                           (updated_at . "2026-07-19T09:00:00Z")
+                           (position
+                            (new_path . "src/bar.el")
+                            (old_path . "src/bar.el")
+                            (new_line . 10)
+                            (old_line . nil)))))
+        (forge--update-pullreq-draft-notes repo pr (list draft-note))
+        (let* ((all     (oref pr review-comments))
+               (pending (seq-filter (lambda (rc) (oref rc pending-p)) all)))
+          (should (= (length pending) 1))
+          (should (equal (oref (car pending) their-id) "55"))
+          (should (equal (oref (car pending) body) "Draft body"))))))
   ```
 
-- [ ] **Step 2: Run the test**
+- [ ] **Step 2: Run to confirm failure**
 
   ```sh
-  make test 2>&1 | grep "forge-review-pull-preserves-locally-staged"
+  make test 2>&1 | grep "forge-review-gitlab-pull-fetches-draft"
   ```
 
-  Expected: `PASSED` (no code change needed).
+  Expected: `FAILED`
 
-- [ ] **Step 3: Commit the test**
+- [ ] **Step 3: Add `forge--update-pullreq-draft-notes` for GitLab**
+
+  In `lisp/forge-gitlab.el`, add after `forge--update-pullreq-review-comments`:
+
+  ```elisp
+  (cl-defmethod forge--update-pullreq-draft-notes
+    ((_repo forge-gitlab-repository) pr notes)
+    "Map GitLab draft NOTES into DB rows for PR with pending-p t."
+    (closql-with-transaction (forge-db)
+      (dolist (note notes)
+        (forge--gitlab-draft-note-to-rc pr note))))
+  ```
+
+- [ ] **Step 4: Call it from the GitLab pull flow**
+
+  In `lisp/forge-gitlab.el`, find where `forge--update-pullreq-review-comments` is called after fetching inline discussions (line ~377). Add a subsequent REST call to fetch draft notes and map them:
+
+  ```elisp
+  ;; After updating submitted review comments, fetch draft notes for the current user.
+  (forge--rest pr "GET"
+    "/projects/:project/merge_requests/:number/draft_notes"
+    nil
+    :callback (lambda (data _headers _status _req)
+                (forge--update-pullreq-draft-notes repo pullreq data)))
+  ```
+
+  Note: this is a fire-and-forget fetch inside the existing pull callback chain. If it fails (e.g. GitLab version without draft notes API), the error is logged but does not abort the pull.
+
+- [ ] **Step 5: Run full test suite**
 
   ```sh
-  git add tests/forge-review-test.el
-  git commit -m "test: pull of browser-pending threads does not clobber locally-staged rows"
+  make test 2>&1 | tail -10
+  ```
+
+  Expected: all pass.
+
+- [ ] **Step 6: Commit**
+
+  ```sh
+  git add lisp/forge-gitlab.el tests/forge-review-test.el
+  git commit -m "feat: fetch GitLab draft notes during pull and store as pending review comments"
   ```
 
 ---
@@ -699,12 +1148,16 @@ The fix: add a third branch — if `pending-p t` AND `their-id` non-nil, call `f
 
 | File | Change |
 |---|---|
-| `lisp/forge-github.el` | `forge--update-pullreq-review-comments`: `:pending-p (eq state2 'pending)` instead of hardcoded `nil` |
-| `lisp/forge-github.el` | `forge--github-pending-review-comments`: filter to nil `their-id` only (exclude browser-pending from REST approve payload) |
-| `lisp/forge-github.el` | Rename `forge--github-pending-review-threads` → `forge--github-pending-review-threads-from` accepting explicit list |
-| `lisp/forge-github.el` | `forge--review-submit`: branch on browser-pending rows; use `submitPullRequestReview` path |
-| `lisp/forge-github.el` | Add `forge--github-add-threads-then-submit` helper |
-| `lisp/forge-review.el` | Add `forge--review-fetch-pending-review-id` generic |
-| `lisp/forge-github.el` | Add `forge--review-fetch-pending-review-id` GitHub method |
-| `lisp/forge-review.el` | `forge-discard-review-comment`: branch on `their-id` to decide API-first vs local-only |
-| `tests/forge-review-test.el` | New tests for each of the above behaviors |
+| `lisp/forge-github.el` | Pull mapping: `:pending-p (eq state2 'pending)` |
+| `lisp/forge-github.el` | Remove `forge--review-submit`, `forge--github-pending-review-threads`, `forge--github-pending-review-comments`, `forge--github-flush-pending-review-comments` |
+| `lisp/forge-github.el` | Add `forge--review-create-draft`, `forge--github-draft-node-to-rc`, `forge--review-edit-draft`, `forge--review-publish-pending` methods |
+| `lisp/forge-github.el` | Remove `comments` bundling from `forge--submit-approve-pullreq` / `forge--submit-request-changes` |
+| `lisp/forge-gitlab.el` | Remove `forge--review-submit` sequential POST loop |
+| `lisp/forge-gitlab.el` | Add `forge--review-create-draft`, `forge--gitlab-draft-note-to-rc`, `forge--review-edit-draft`, `forge--review-delete-comment` (draft/submitted dispatch), `forge--review-publish-pending`, `forge--update-pullreq-draft-notes` methods |
+| `lisp/forge-gitlab.el` | Pull flow: add draft notes fetch after discussion fetch |
+| `lisp/forge-review.el` | Remove `forge--review-submit` generic |
+| `lisp/forge-review.el` | Add `forge--review-create-draft`, `forge--review-edit-draft`, `forge--review-publish-pending` generics |
+| `lisp/forge-review.el` | Rewrite `forge-review--stage-comment` (API call), `forge-review--save-comment-edit` (API call), `forge-discard-review-comment` (remove pending-p branch), `forge-submit-pending-review` (use publish-pending) |
+| `lisp/forge-review.el` | Add `forge-review--stage-and-publish` |
+| `lisp/forge-post.el` | Add `C-c C-p` keybinding, `forge-post-stage-and-publish` command, transient entry |
+| `tests/forge-review-test.el` | New tests for each of the above |
