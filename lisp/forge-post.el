@@ -112,7 +112,6 @@ an error."
   "C-c C-c"                                #'forge-post-submit
   "<remap> <evil-save-and-close>"          #'forge-post-submit
   "<remap> <evil-save-modified-and-close>" #'forge-post-submit
-  "C-c C-p"                                #'forge-post-stage-and-publish
   "C-c C-k"                                #'forge-post-cancel
   "<remap> <kill-buffer>"                  #'forge-post-cancel
   "<remap> <ido-kill-buffer>"              #'forge-post-cancel
@@ -320,11 +319,6 @@ Insert the value of `branch.BRANCH.description' of the source BRANCH."
     ("C-c" "Submit"           forge-post-submit)
     ("C-s" "Stage as pending" forge-post-stage
      :if (lambda () (eq forge-edit-post-action 'new-review-comment)))
-    ("C-p" "Stage + publish batch" forge-post-stage-and-publish
-     :if (lambda ()
-           (and (eq forge-edit-post-action 'new-review-comment)
-                (seq-some (lambda (rc) (oref rc pending-p))
-                          (oref forge--buffer-post-object review-comments)))))
     ("C-k" "Cancel"           forge-post-cancel)]])
 
 (defun forge-post-submit ()
@@ -342,16 +336,6 @@ Insert the value of `branch.BRANCH.description' of the source BRANCH."
   (interactive)
   (save-buffer)
   (forge-review--stage-comment
-   (forge-get-repository forge--buffer-post-object)
-   forge--buffer-post-object))
-
-(declare-function forge-review--stage-and-publish "forge-review" (repo post))
-
-(defun forge-post-stage-and-publish ()
-  "Stage the current inline review comment as a draft, then publish the pending batch."
-  (interactive)
-  (save-buffer)
-  (forge-review--stage-and-publish
    (forge-get-repository forge--buffer-post-object)
    forge--buffer-post-object))
 

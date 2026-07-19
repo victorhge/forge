@@ -411,35 +411,6 @@ Writes the DB row in the callback once the server responds with a real ID."
                          (magit-mode-bury-buffer 'kill))))
         :errorback (forge--post-submit-errorback)))))
 
-(defun forge-review--stage-and-publish (repo post)
-  "Stage a new draft comment then publish all pending comments as a batch review."
-  (let* ((pr     (if (forge--childp post 'forge-pullreq) post
-                   forge--buffer-post-object))
-         (body   (forge--clear-comment-input (buffer-string)))
-         (result (with-current-buffer forge--pre-post-buffer
-                   (forge--diff-line-number-at-point)))
-         (path   (with-current-buffer forge--pre-post-buffer
-                   (forge--diff-file-at-point)))
-         (context-p (and result (consp (car result))))
-         (side   (cond (context-p       'new)
-                       ((eq (car result) 'old) 'old)
-                       (t               'new)))
-         (line   (cond (context-p       (alist-get 'new result))
-                       (t               (cdr result)))))
-    (let ((prevbuf forge--pre-post-buffer)
-          (editbuf (current-buffer)))
-      (forge--review-create-draft repo pr body path side line
-        :callback  (lambda (_rc)
-                     (forge--review-publish-pending repo pr
-                       :callback  (lambda (&rest _)
-                                    (forge--pull-topic repo pr)
-                                    (forge-refresh-buffer prevbuf)
-                                    (when (buffer-live-p editbuf)
-                                      (with-current-buffer editbuf
-                                        (magit-mode-bury-buffer 'kill))))
-                       :errorback (forge--post-submit-errorback)))
-        :errorback (forge--post-submit-errorback)))))
-
 (defun forge-review--save-comment-edit (repo post)
   "Save edits to review comment POST via the forge API."
   (let* ((rc   (if (forge--childp post 'forge-pullreq-review-comment) post
