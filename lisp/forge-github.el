@@ -1442,9 +1442,8 @@
   "Create a GitHub draft review thread at PATH SIDE LINE with BODY."
   (let ((data (forge--query pr
     `(mutation
-      [(input $input AddPullRequestReviewThreadInput!)]
       (addPullRequestReviewThread
-       [(input $input)]
+       [(input $input AddPullRequestReviewThreadInput!)]
        (thread
         (comments
          [(first 1)]
@@ -1509,9 +1508,8 @@ Inserts the row and returns it."
   "Edit the body of GitHub draft review comment RC."
   (forge--query rc
     `(mutation
-      [(input $input UpdatePullRequestReviewCommentInput!)]
       (updatePullRequestReviewComment
-       [(input $input)]
+       [(input $input UpdatePullRequestReviewCommentInput!)]
        (pullRequestReviewComment id body updatedAt)))
     `((input
        (pullRequestReviewCommentId . ,(oref rc their-id))
@@ -1528,9 +1526,8 @@ Inserts the row and returns it."
 Used by `forge--review-publish-pending' for both sync and async paths."
   (forge--query pr
     `(mutation
-      [(input $input SubmitPullRequestReviewInput!)]
       (submitPullRequestReview
-       [(input $input)]
+       [(input $input SubmitPullRequestReviewInput!)]
        (pullRequestReview id)))
     `((input
        (pullRequestReviewId . ,review-id)
@@ -1544,17 +1541,18 @@ Used by `forge--review-publish-pending' for both sync and async paths."
   "Submit the current user's pending review on PR via submitPullRequestReview."
   (let ((data (forge--query pr
                 '(query
-                  [(id $id ID!)]
-                  (node [(id $id)]
-                        (... on PullRequest
-                             (reviews [(last 1) (states [PENDING])]
-                                      (nodes id)))))
+                  (node [(id $id ID!)]
+                        "... on PullRequest { reviews(last: 10) { nodes { id state } } }"))
                 `((id . ,(oref pr their-id)))
                 :callback  (lambda (data _headers _status _req)
                              (let* ((nodes (alist-get 'nodes
                                             (alist-get 'reviews
                                              (alist-get 'node data))))
-                                    (review-id (and nodes (alist-get 'id (car nodes)))))
+                                    (pending (seq-find
+                                              (lambda (n)
+                                                (equal (alist-get 'state n) "PENDING"))
+                                              nodes))
+                                    (review-id (and pending (alist-get 'id pending))))
                                (if (not review-id)
                                    (when errorback
                                      (funcall errorback
@@ -1567,7 +1565,10 @@ Used by `forge--review-publish-pending' for both sync and async paths."
       (let* ((nodes (alist-get 'nodes
                      (alist-get 'reviews
                       (alist-get 'node data))))
-             (review-id (and nodes (alist-get 'id (car nodes)))))
+             (pending (seq-find (lambda (n)
+                                  (equal (alist-get 'state n) "PENDING"))
+                                nodes))
+             (review-id (and pending (alist-get 'id pending))))
         (if (not review-id)
             (when errorback
               (funcall errorback

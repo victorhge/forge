@@ -1959,8 +1959,8 @@ Defined here so unit tests do not need to load the integration test file."
           (cl-letf (((symbol-function 'forge--query)
                      (lambda (_obj query vars &rest _)
                        (push (cons query vars) mutations)
-                       (if (string-match-p "PENDING" (format "%s" query))
-                           '((node (reviews (nodes ((id . "PRR_rev1"))))))
+                       (if (string-match-p "reviews" (format "%s" query))
+                           '((node (reviews (nodes ((id . "PRR_rev1") (state . "PENDING"))))))
                          nil))))
             (forge--review-publish-pending
              repo pr

@@ -572,7 +572,7 @@ the GraphQL reviewThreads query instead."
          (when found-a (push (alist-get 'id found-a) posted-ids))
          (when found-b (push (alist-get 'id found-b) posted-ids))
          (should found-a)
-         (should found-b)))))
+         (should found-b))))))
 
 ;;; GitLab integration tests
 
