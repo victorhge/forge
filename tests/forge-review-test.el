@@ -2107,6 +2107,44 @@ Defined here so unit tests do not need to load the integration test file."
       (should api-called)
       (should (equal (oref rc body) "Updated body")))))
 
+(ert-deftest forge-review-stage-and-publish-creates-draft-then-publishes ()
+  "`forge-review--stage-and-publish' calls create-draft then publish-pending."
+  (forge-test--with-db
+    (let* ((repo (forge-test--make-repo))
+           (pr   (forge-test--make-pullreq repo))
+           ;; Pre-existing pending comment so the action is available.
+           (_existing (forge-test--make-review-comment
+                       pr :pending-p t :their-id "RC_existing"))
+           (create-called nil)
+           (publish-called nil))
+      (forge-itest--with-sync-rest
+        (cl-letf (((symbol-function 'forge--review-create-draft)
+                   (lambda (_repo _pr _body _path _side _line &rest args)
+                     (setq create-called t)
+                     (funcall (plist-get args :callback)
+                              (forge-test--make-review-comment
+                               pr :pending-p t :their-id "RC_new2"))))
+                  ((symbol-function 'forge--review-publish-pending)
+                   (lambda (_repo _pr &rest args)
+                     (setq publish-called t)
+                     (funcall (plist-get args :callback) nil nil nil nil)))
+                  ((symbol-function 'forge--pull-topic)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'forge-refresh-buffer) #'ignore)
+                  ((symbol-function 'magit-mode-bury-buffer) #'ignore))
+          (forge-test--with-diff-buffer
+              "--- a/src/foo.el\n+++ b/src/foo.el\n@@ -1,3 +1,3 @@\n line\n-old\n+new\n"
+            (forward-line 3)
+            (let ((diff-buf (current-buffer)))
+              (with-temp-buffer
+                (forge-post-mode)
+                (setq forge--buffer-post-object pr)
+                (setq forge--pre-post-buffer diff-buf)
+                (insert "New comment")
+                (forge-review--stage-and-publish repo pr))))))
+      (should create-called)
+      (should publish-called))))
+
 ;;; _
 
 (provide 'forge-review-test)
