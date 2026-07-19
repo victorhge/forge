@@ -850,6 +850,25 @@ Regression: the predicate previously required ch=?+ so context lines were never 
                               (oref pr review-comments))))
         (should (eq (oref opener review-state) 'approved))))))
 
+(ert-deftest forge-review-api-github-pending-review-state-sets-pending-p ()
+  "A thread from a PENDING review is stored with pending-p t and their-id set."
+  (forge-test--with-db
+    (let* ((repo    (forge-test--make-repo))
+           (pr      (forge-test--make-pullreq repo))
+           (payload (copy-tree forge-test--github-thread-payload)))
+      (setf (alist-get 'state (alist-get 'pullRequestReview
+                                (nth 0 (alist-get 'comments payload)))) "PENDING")
+      (setf (alist-get 'state (alist-get 'pullRequestReview
+                                (nth 1 (alist-get 'comments payload)))) "PENDING")
+      (forge--update-pullreq-review-comments repo pr (list payload))
+      (let* ((all    (oref pr review-comments))
+             (opener (seq-find (lambda (c) (null (oref c reply-to))) all))
+             (reply  (seq-find (lambda (c) (oref c reply-to)) all)))
+        (should (eq (oref opener pending-p) t))
+        (should (eq (oref reply   pending-p) t))
+        (should (equal (oref opener their-id) "RC_node1"))
+        (should (equal (oref reply  their-id) "RC_node2"))))))
+
 (ert-deftest forge-review-api-github-refresh-replaces-rows ()
   "Calling update twice with the same thread replaces rows, not duplicates them."
   (forge-test--with-db

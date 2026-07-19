@@ -1417,7 +1417,7 @@
                     :created      .createdAt
                     :updated      .updatedAt
                     :reactions    (forge--reaction-groups-to-alist .reactionGroups)
-                    :pending-p    nil)
+                    :pending-p    (eq state2 'pending))
                    t))))))))))
 
 ;;; Review – write operations
