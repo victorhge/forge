@@ -1333,8 +1333,11 @@ Runs on `magit-setup-buffer-hook' so that revision buffers opened
 directly from a forge topic buffer inherit the topic context."
   (when (and (derived-mode-p 'magit-diff-mode)
              (not forge-buffer-topic)
-             (forge--childp magit-previous-section 'magit-section))
-    (when-let* ((src (marker-buffer (oref magit-previous-section start)))
+             (forge--childp magit-previous-section 'magit-section)
+             (markerp (oref magit-previous-section start))
+             )
+    (when-let* ((pos (oref magit-previous-section start))
+                (src (marker-buffer pos))
                 (topic (buffer-local-value 'forge-buffer-topic src)))
       (when (forge--childp topic 'forge-topic)
         (setq forge-buffer-topic topic)))))
